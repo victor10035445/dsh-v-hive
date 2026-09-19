@@ -1,0 +1,16 @@
+node_modules/
+*.log
+.DS_Store
+
+# OpenSpec 规格与开发归档（本地留存，不入发布仓库）
+openspec/
+
+# 开发过程草稿与临时脚本
+.jiuyu/
+.tg-diff.mjs
+hive-chrome-preview.html
+
+# 模型源文件（assets/models/*.glb 编译产物入库，FBX/FBM 源本地留存）
+*.fbx
+*.fbm/
+blue-worker/

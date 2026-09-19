@@ -1,0 +1,46 @@
+{
+  "name": "dsh-v-hive",
+  "description": "V 蜂巢 — DSH Web 的 3D 蜂巢会话空间化插件（工作区=六边形蜂巢工作室、会话=工蜂、归档=储蜜；three.js 统一晶格场景 + 选蜂切会话）",
+  "version": "0.2.0",
+  "license": "MIT",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/bee-types.mjs",
+    "lib/capabilities.mjs",
+    "lib/lane.mjs",
+    "lib/status-cards.mjs",
+    "lib/client.js",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    }
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "check": "node --check lib/index.js && node --check lib/bee-types.mjs && node --check lib/capabilities.mjs && node --check lib/lane.mjs && node --check lib/client.js",
+    "test": "node test/styles-smoke.mjs && node test/hex-smoke.mjs && node test/dock-yield-smoke.mjs && node test/layout-smoke.mjs && node test/bee-model-smoke.mjs && node test/hex-fx-smoke.mjs && node test/drone-visibility-smoke.mjs && node test/watermark-smoke.mjs && node test/walls-smoke.mjs && node test/host-state-smoke.mjs && node test/hotbars-smoke.mjs && node test/hotbars-host-smoke.mjs && node test/status-cards-smoke.mjs && node test/status-cards-host-smoke.mjs && node test/factory-smoke.mjs && node test/composer-bridge-smoke.mjs && node test/hotbars-ui-smoke.mjs && node test/status-cards-ui-smoke.mjs && node test/bee-types-smoke.mjs && node test/bee-types-summon-tool-smoke.mjs && node test/capabilities-smoke.mjs && node test/lane-smoke.mjs && node test/bee-engine-smoke.mjs && node test/render-lod-smoke.mjs && node test/camera-gesture-smoke.mjs && node test/follow-smoke.mjs && node test/keyboard-smoke.mjs && node test/tips-smoke.mjs && node test/links-smoke.mjs && node test/brief-bar-smoke.mjs && node test/summon-tool-smoke.mjs && node test/wait-tool-smoke.mjs && node test/swarm-preset-ui-smoke.mjs && node test/combat-log-smoke.mjs && node --expose-gc test/perf-smoke.mjs"
+  },
+  "dependencies": {
+    "zod": "^4.1.5"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "fbx2gltf": "0.9.7-p1",
+    "three": "^0.185.0"
+  }
+}

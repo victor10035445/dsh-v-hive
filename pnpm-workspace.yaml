@@ -1,0 +1,3 @@
+# pnpm 构建脚本批准：esbuild 的平台二进制经 postinstall 落位。
+allowBuilds:
+  esbuild: true
