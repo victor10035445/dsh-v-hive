@@ -3,6 +3,7 @@
   "description": "V 蜂巢 — DSH Web 的 3D 蜂巢会话空间化插件（工作区=六边形蜂巢工作室、会话=工蜂、归档=储蜜；three.js 统一晶格场景 + 选蜂切会话）",
   "version": "0.2.0",
   "license": "MIT",
+  "homepage": "https://github.com/victor10035445/dsh-v-hive#readme",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
