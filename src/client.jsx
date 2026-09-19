@@ -2847,6 +2847,11 @@ const SetGroup = ({ label }) => <div className="jyv-setGroup">{label}</div>;
  * 预校验（字段级 zh/en 提示）→ 控制器 putState（409 重放 + host-stale 检测）。
  * ------------------------------------------------------------------ */
 
+/* 对话模型（LLM；与 3D 外观模型 beeModel 是两个不同字段）下拉的键构造——
+ * 受控 value 与 <option> value 的唯一出处（fix-swarm-llm-model-select：历史上
+ * option 用 JSON 串、value 用拼接串，两轨永不相等 → 选择后弹回默认）。 */
+const modelKeyOf = (m) => m.provider + "/" + m.model + (m.reasoningEffort ? "/" + m.reasoningEffort : "");
+
 function BeeSwarmModal({ t, beeTypes, guardRef, onClose, onSave, onNotify, modelCatalog, modelState }) {
   const [tab, setTab] = useState("types");
   const [confirmDiscard, setConfirmDiscard] = useState(false);
@@ -2959,6 +2964,25 @@ function BeeSwarmModal({ t, beeTypes, guardRef, onClose, onSave, onNotify, model
     setError(result?.error === "host-stale" ? t("hive.swarm.hostStale") : t("hive.qc.saveFailed"));
   };
 
+  /* 对话模型目录展开：options（含首项「使用默认模型」空键）+ 键→对象映射（onChange
+   * 反查构造模型对象，杜绝 JSON-in-DOM-attribute；重键以先建者胜，查表不做手写解析）。 */
+  const modelOptions = (() => {
+    const items = [{ key: "", entry: null, label: t("hive.swarm.modelNone") }];
+    const byKey = new Map([["", null]]);
+    for (const g of modelCatalog?.groups ?? []) {
+      for (const mm of g.models ?? []) {
+        const efforts = mm.reasoning?.efforts ?? [];
+        for (const eff of efforts.length ? efforts : [null]) {
+          const entry = { provider: g.id, model: mm.id, ...(eff ? { reasoningEffort: eff.id } : {}) };
+          const key = modelKeyOf(entry);
+          if (!byKey.has(key)) byKey.set(key, entry);
+          items.push({ key, entry, label: g.name + " · " + mm.name + (eff ? " · " + eff.name : "") });
+        }
+      }
+    }
+    return { items, byKey };
+  })();
+
   const onTabKeyDown = (e) => {
     const order = ["types", "caps"];
     const idx = order.indexOf(tab);
@@ -3051,19 +3075,13 @@ function BeeSwarmModal({ t, beeTypes, guardRef, onClose, onSave, onNotify, model
                     ) : !modelCatalog ? (
                       <span className="jyv-swarmHint">{t("hive.swarm.modelUnavailable")}</span>
                     ) : (
-                      <select value={row.model ? row.model.provider + "/" + row.model.model + (row.model.reasoningEffort ? "/" + row.model.reasoningEffort : "") : ""} onChange={(e) => patchType(row.id, e.target.value ? { model: JSON.parse(e.target.value) } : { model: undefined })}>
-                        <option value="">{t("hive.swarm.modelNone")}</option>
-                        {(modelCatalog.groups ?? []).flatMap((g) =>
-                          (g.models ?? []).map((m) => {
-                            const efforts = m.reasoning?.efforts ?? [];
-                            const options = efforts.length ? efforts : [null];
-                            return options.map((eff) => {
-                              const value = JSON.stringify({ provider: g.id, model: m.id, ...(eff ? { reasoningEffort: eff.id } : {}) });
-                              const label = g.name + " · " + m.name + (eff ? " · " + eff.name : "");
-                              return <option key={value} value={value}>{label}</option>;
-                            });
-                          })
-                        )}
+                      <select
+                        value={row.model ? modelKeyOf(row.model) : ""}
+                        onChange={(e) => patchType(row.id, { model: modelOptions.byKey.get(e.target.value) ?? undefined })}
+                      >
+                        {modelOptions.items.map((it) => (
+                          <option key={it.key} value={it.key}>{it.label}</option>
+                        ))}
                       </select>
                     )}
                   </label>

@@ -5,11 +5,13 @@
  *  - 保存链路：save → validateBeeTypesDraft 预校验 → normalizeBeeTypes 对齐 →
  *    onSave 收到 trim 后的 presetPrompt；
  *  - 校验拒绝：超上限 → 字段级错误（presetPromptTooLong 词条），onSave 不被调用；
- *  - zh/en 词条齐全（hive.swarm.presetPrompt* / hive.bee.err.presetPrompt*）。
+ *  - zh/en 词条齐全（hive.swarm.presetPrompt* / hive.bee.err.presetPrompt*）；
+ *  - 对话模型（LLM）下拉值轨道统一（fix-swarm-llm-model-select）：选后显示 / 重开回显 /
+ *    切回默认清字段 / model id 自含 `/` 极端键 / 外观模型（3D 资产）回归护栏。
  * 运行：node test/swarm-preset-ui-smoke.mjs（先 node build.mjs）
  */
 import { readFileSync } from "node:fs";
-import { MAX_PRESET_PROMPT } from "../src/bee-types.mjs";
+import { MAX_PRESET_PROMPT, BEE_APPEARANCE_MODELS } from "../src/bee-types.mjs";
 
 const code = readFileSync(new URL("../lib/client.js", import.meta.url), "utf8");
 
@@ -341,5 +343,85 @@ for (const lang of ["zh", "en"]) {
     ok(typeof localeEntry.dict[lang]?.[key] === "string", `${lang} 词条 ${key} 齐全`);
   }
 }
+
+/* ── 6. 对话模型（LLM）下拉：值轨道统一（fix-swarm-llm-model-select） ──
+ * 历史缺陷：option value 用 JSON 串、受控 value 用拼接串，两轨永不相等 →
+ * 选择后 selectedIndex=-1 弹回默认。修复后两轨出自同一构造（拼接键），映射反查。 */
+const catalogFixture = {
+  groups: [
+    {
+      id: "volc",
+      name: "Volc",
+      models: [
+        { id: "deepseek-v3.1", name: "DeepSeek V3.1", reasoning: { efforts: [{ id: "high", name: "High" }, { id: "low", name: "Low" }] } },
+        { id: "deep/route-x", name: "Slash Route", reasoning: { efforts: [] } }
+      ]
+    }
+  ]
+};
+const findModelSelect = (modal) => {
+  const labels = collect(modal, (n) => n.tag === "label" && String(n.props.className ?? "").includes("jyv-swarmField") && textOf(n).includes("hive.swarm.model"));
+  ok(labels.length === 1, "对话模型字段标签唯一（每行一处）");
+  return collect(labels[0], (n) => n.tag === "select")[0];
+};
+hookCells = []; hookIndex = 0; // 新组件实例（对话模型交互）
+const propsModel = {
+  t,
+  beeTypes: mirror,
+  guardRef: { current: null },
+  onClose: () => {},
+  onSave: async (rows) => {
+    savedRows = rows;
+    return { ok: true };
+  },
+  onNotify: () => {},
+  modelCatalog: catalogFixture,
+  modelState: "ready"
+};
+const modalMa = render(BeeSwarmModal(propsModel));
+const modelSel0 = findModelSelect(modalMa);
+const optionValues = collect(modelSel0, (n) => n.tag === "option").map((o) => o.props.value);
+eq(modelSel0.props.value, "", "未配置模型 → 受控 value = 空键（显示使用默认模型）");
+eq(optionValues[0], "", "首项 = 使用默认模型（空键）");
+ok(optionValues.includes("volc/deepseek-v3.1/high") && optionValues.includes("volc/deepseek-v3.1/low"), "推理档位展开为独立选项（efforts × models）");
+ok(optionValues.includes("volc/deep/route-x"), "model id 自含 / 的目录条目以完整键入选项（映射查表，无手写解析）");
+ok(optionValues.every((v) => !v.startsWith("{")), "option value SHALL NOT 为 JSON 串（两轨同源）");
+
+const pickKey = "volc/deepseek-v3.1/high";
+modelSel0.props.onChange({ target: { value: pickKey } });
+hookIndex = 0; // 第二遍渲染：复用同一组 useState 胞元（保持草稿）
+const modelSel1 = findModelSelect(render(BeeSwarmModal(propsModel)));
+eq(modelSel1.props.value, pickKey, "选择后受控 value 精确命中所选 option（菜单显示所选模型）");
+
+modelSel1.props.onChange({ target: { value: "" } });
+hookIndex = 0;
+const modalMb = render(BeeSwarmModal(propsModel));
+const saveM = typesPanelSave(modalMb)[0];
+await saveM.props.onClick();
+ok(savedRows !== null && !("model" in savedRows[0]), "切回「使用默认模型」→ 保存载荷无 model 键（undefined 不落）");
+
+/* ── 7. 重开回显：已保存 model（含 reasoningEffort）→ 精确命中对应 option ── */
+const savedMirror = [{ id: "exec", name: "执行蜂", queuePolicy: "free", model: { provider: "volc", model: "deepseek-v3.1", reasoningEffort: "low" }, capabilities: [] }];
+hookCells = []; hookIndex = 0;
+const propsEcho = {
+  t,
+  beeTypes: savedMirror,
+  guardRef: { current: null },
+  onClose: () => {},
+  onSave: async () => ({ ok: true }),
+  onNotify: () => {},
+  modelCatalog: catalogFixture,
+  modelState: "ready"
+};
+const modalEa = render(BeeSwarmModal(propsEcho));
+const echoSel = findModelSelect(modalEa);
+eq(echoSel.props.value, "volc/deepseek-v3.1/low", "已配置模型的蜂种重开 → 受控 value = 其模型键");
+ok(collect(echoSel, (n) => n.tag === "option" && n.props.value === "volc/deepseek-v3.1/low").length === 1, "回显 value 命中真实 option（DOM selectedIndex 语义成立）");
+
+/* ── 8. 回归护栏：外观模型（beeModel，3D 资产）下拉不受本次修复影响 ── */
+const beeLabels = collect(modalMa, (n) => n.tag === "label" && String(n.props.className ?? "").includes("jyv-swarmField") && textOf(n).includes("hive.swarm.beeModel"));
+ok(beeLabels.length === 1, "外观模型字段在场");
+const beeValues = collect(beeLabels[0], (n) => n.tag === "select")[0] && collect(collect(beeLabels[0], (n) => n.tag === "select")[0], (n) => n.tag === "option").map((o) => o.props.value);
+ok(Array.isArray(beeValues) && beeValues.length === BEE_APPEARANCE_MODELS.length && beeValues.every((v) => BEE_APPEARANCE_MODELS.includes(v)), "外观模型选项集 = BEE_APPEARANCE_MODELS（键格式未变）");
 
 console.log("ALL SWARM PRESET UI SMOKE TESTS PASSED");
