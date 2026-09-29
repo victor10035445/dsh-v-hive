@@ -12,14 +12,15 @@
  *   id: string                    唯一；禁用保留字 "default"（缺省蜂由「无绑定」语义表达）
  *   name: string                  非空（trim）
  *   description?: string
- *   model?: { provider, model, reasoningEffort? }   只校验形状，不校验目录成员（审阅 F10）
  *   beeModel?: string             外观模型 id（BEE_APPEARANCE_MODELS 之一；缺省 = worker）
- *   presetPrompt?: string         蜂种级预设提示词（hive-summon-tool，B 侧行为定义）：
- *                                 工具召唤首条消息 = payload（A 侧数据，在前）+ 本字段
- *                                 （B 侧行为，在后）；trim 存储，超上限丢弃/拒绝
  *   queuePolicy: "free" | "serialized"              缺省 free
  *   capabilities: Capability[]（每蜂种上限 16）
  * }
+ *
+ * 职责分离（add-hotbar-llm-model-and-import D1，BREAKING）：蜂种 SHALL NOT 承载 LLM
+ * 对话模型或预设提示词——LLM 模型归指令卡（hotbar-card-model）、提示词归卡片/工具
+ * payload。存量文档残留的 `model` / `presetPrompt` 两字段经 normalizeBeeTypes 重建对象
+ * 时自然消失（静默剥离，无迁移代码、SHALL NOT 报错）。
  *
  * Capability = {
  *   id: string                    蜂种内唯一
@@ -43,10 +44,6 @@ export const MAX_BEE_TYPES = 16;
 export const MAX_CAPABILITIES = 16;
 export const MAX_CAPTURE_VARS = 8;
 export const RESERVED_BEE_TYPE_ID = "default";
-
-/** 蜂种预设提示词长度上限（hive-summon-tool）：字符数（trim 后）。B 侧行为定义
- *  是紧凑的指引文本而非任务载荷（任务走 payload），4000 字符余量充足。 */
-export const MAX_PRESET_PROMPT = 4000;
 
 /** 蜂种外观模型（3D 蜂模型 id）：资产 = assets/models/<id>.glb（宿主 /assets/ 路由
  *  提供），渲染层按蜂种变体实例化。worker 为默认外观（缺省/未知 id 回落）。 */
@@ -113,15 +110,6 @@ function normalizeKeyPath(value) {
     if (!KEY_PATH_SEGMENT_RE.test(segment)) return null;
   }
   return segments.join(".");
-}
-
-function normalizeModel(value) {
-  if (!value || typeof value !== "object") return undefined;
-  const provider = cleanText(value.provider);
-  const model = cleanText(value.model);
-  const reasoningEffort = cleanText(value.reasoningEffort);
-  if (!provider || !model) return undefined;
-  return reasoningEffort ? { provider, model, reasoningEffort } : { provider, model };
 }
 
 function normalizeFilePredicate(value) {
@@ -194,12 +182,8 @@ export function normalizeBeeTypes(raw) {
     const name = cleanText(item.name);
     if (!id || !ID_RE.test(id) || id === RESERVED_BEE_TYPE_ID || !name) continue;
     if (ids.has(id)) continue;
-    const model = normalizeModel(item.model);
     const queuePolicy = item.queuePolicy === "serialized" ? "serialized" : "free";
     const beeModel = BEE_APPEARANCE_MODELS.includes(item.beeModel) ? item.beeModel : undefined;
-    /* 预设提示词（hive-summon-tool）：trim 存储；超上限的条目按缺失处理（读取路径
-       宽松归一化——手工改坏的文档丢弃字段而非整条蜂种，与 description 同口径）。 */
-    const presetPrompt = cleanText(item.presetPrompt);
     const capabilities = [];
     const capIds = new Set();
     for (const rawCap of Array.isArray(item.capabilities) ? item.capabilities : []) {
@@ -210,12 +194,11 @@ export function normalizeBeeTypes(raw) {
       capabilities.push(cap);
     }
     ids.add(id);
+    /* 显式重建对象（白名单键）：存量文档的 `model` / `presetPrompt` 在此静默剥离。 */
     out.push({
       id,
       name,
       ...(cleanText(item.description) ? { description: cleanText(item.description) } : {}),
-      ...(model ? { model } : {}),
-      ...(presetPrompt && presetPrompt.length <= MAX_PRESET_PROMPT ? { presetPrompt } : {}),
       queuePolicy,
       ...(beeModel && beeModel !== DEFAULT_APPEARANCE_MODEL ? { beeModel } : {}),
       capabilities
@@ -279,10 +262,10 @@ const fieldAt = (index, sub) => `beeTypes[${index}]${sub ? "." + sub : ""}`;
  * 校验待提交的蜂种草稿（PUT /state 的 beeTypes 字段）。全部通过返回 null；
  * 否则返回首个 `{ field, code }`（宿主 400 带字段级原因，客户端映射 zh/en 词条）。
  *
- * 规则：id 合法且唯一且非保留字；name 非空；model 形状；presetPrompt 类型/长度
- * （超上限 → presetPromptTooLong）；queuePolicy 枚举；
+ * 规则：id 合法且唯一且非保留字；name 非空；queuePolicy 枚举；
  * capabilities 上限与逐条校验（含模板可编译性：占位符语法、捕获键路径、文件谓词形状）；
  * spawn 动作必须带 promptTemplate + targetBeeTypeId；send 必须带 promptTemplate。
+ * （add-hotbar-llm-model-and-import D1：model / presetPrompt 规则随字段一并移除。）
  */
 export function validateBeeTypesDraft(rows) {
   if (!Array.isArray(rows)) return { field: "beeTypes", code: "invalidShape" };
@@ -298,30 +281,11 @@ export function validateBeeTypesDraft(rows) {
     if (ids.has(id)) return { field: fieldAt(index, "id"), code: "duplicateId" };
     ids.add(id);
     if (!cleanText(row.name)) return { field: fieldAt(index, "name"), code: "missingName" };
-    if (row.model !== undefined && row.model !== null) {
-      if (typeof row.model !== "object") return { field: fieldAt(index, "model"), code: "invalidModel" };
-      if (!cleanText(row.model.provider) || !cleanText(row.model.model)) {
-        return { field: fieldAt(index, "model"), code: "invalidModel" };
-      }
-      if (row.model.reasoningEffort !== undefined && !cleanText(row.model.reasoningEffort)) {
-        return { field: fieldAt(index, "model.reasoningEffort"), code: "invalidModel" };
-      }
-    }
     if (row.queuePolicy !== undefined && row.queuePolicy !== "free" && row.queuePolicy !== "serialized") {
       return { field: fieldAt(index, "queuePolicy"), code: "invalidQueuePolicy" };
     }
     if (row.beeModel !== undefined && row.beeModel !== null && !BEE_APPEARANCE_MODELS.includes(row.beeModel)) {
       return { field: fieldAt(index, "beeModel"), code: "invalidBeeModel" };
-    }
-    /* 预设提示词（hive-summon-tool）：可空（缺省 = 无预设）；非法类型/超上限
-       → 字段级原因（宿主 400，客户端映射词条）。 */
-    if (row.presetPrompt !== undefined && row.presetPrompt !== null) {
-      if (typeof row.presetPrompt !== "string" || !cleanText(row.presetPrompt)) {
-        return { field: fieldAt(index, "presetPrompt"), code: "invalidPresetPrompt" };
-      }
-      if (row.presetPrompt.trim().length > MAX_PRESET_PROMPT) {
-        return { field: fieldAt(index, "presetPrompt"), code: "presetPromptTooLong" };
-      }
     }
     const caps = row.capabilities ?? [];
     if (!Array.isArray(caps)) return { field: fieldAt(index, "capabilities"), code: "invalidShape" };

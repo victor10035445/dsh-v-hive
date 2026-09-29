@@ -17,7 +17,6 @@ import {
   normalizeSettings
 } from "./settings.mjs";
 import { normalizeHotbars } from "./hotbars.mjs";
-import { normalizeStatusCards } from "./status-cards.mjs";
 
 const SETTINGS_KEY = "dsh-v-hive:settings";
 
@@ -129,23 +128,19 @@ export const beeTypesStore = {
 };
 
 /* ------------------------------------------------------------------ *
- * 指令编辑域镜像 store（context-hotbar-rework 6.1 + bee-status-cards
- * D9）：布局文档 hotbars 三栏 + statusCards 两字段镜像（controller 在
- * fetchState / SSE 广播 / 写回成功三路同步；状态栏与指令编辑模态共享同一
- * 份）。模块级微观察者（beeTypesStore 同款；权威在宿主端 doc），入 store
- * 即 normalizeHotbars / normalizeStatusCards 归一化（坏数据按空处理，
- * statusCards 丢弃悬空键）。热区集合变化时「热区变化」通知也走同一订阅。
+ * 指令编辑域镜像 store（context-hotbar-rework 6.1；add-proposal-panel
+ * 拆 statusCards 路径）：布局文档 hotbars 四栏单字段镜像（controller 在
+ * fetchState / SSE 广播 / 写回成功三路同步；指令编辑模态共享同一份）。
+ * 模块级微观察者（beeTypesStore 同款；权威在宿主端 doc），入 store 即
+ * normalizeHotbars 归一化（坏数据按空处理）。热区集合变化时「热区变化」
+ * 通知也走同一订阅。
  * ------------------------------------------------------------------ */
 
 export const hotbarsStore = {
-  hotbars: { hive: [], bee: [], floor: [] },
-  statusCards: {},
+  hotbars: { hive: [], bee: [], floor: [], proposal: [] },
   listeners: new Set(),
   getSnapshot() {
     return this.hotbars;
-  },
-  getStatusCards() {
-    return this.statusCards;
   },
   subscribe(listener) {
     this.listeners.add(listener);
@@ -160,16 +155,11 @@ export const hotbarsStore = {
       }
     }
   },
-  /** 单口收口（D9）：同帧镜像 hotbars + statusCards（入 store 即归一化）。 */
+  /** 单口收口：同帧镜像 hotbars（入 store 即归一化）。 */
   set(doc) {
     const next = normalizeHotbars(doc?.hotbars);
-    const nextStatus = normalizeStatusCards(doc?.statusCards, doc?.beeTypes);
-    const changed =
-      JSON.stringify(this.hotbars) !== JSON.stringify(next) ||
-      JSON.stringify(this.statusCards) !== JSON.stringify(nextStatus);
-    if (!changed) return;
+    if (JSON.stringify(this.hotbars) === JSON.stringify(next)) return;
     this.hotbars = next;
-    this.statusCards = nextStatus;
     this.emit();
   }
 };
@@ -199,5 +189,65 @@ export const beeEngineStore = {
         /* ignore */
       }
     }
+  }
+};
+
+/* ------------------------------------------------------------------ *
+ * 提案清单镜像 store（add-proposal-panel 5.2）：宿主 GET /proposals 的
+ * 全工作区分组清单（每请求即时收集，无缓存）。模块级微观察者
+ * （beeTypesStore 同款）——`proposals-changed` 轻帧只负责 bump 与重拉，
+ * 帧体不带载荷（避免帧体与清单两处状态）。状态位（proposalStates）不在此
+ * store：它随既有 `layout-changed` 文档镜像流动（hotbarsStore 同源三路）。
+ * ------------------------------------------------------------------ */
+
+export const proposalsStore = {
+  groups: [],
+  loading: false,
+  error: null,
+  /** 每次成功/失败拉取的序号（订阅者据此重渲染；内容相同也不吞掉刷新反馈）。 */
+  seq: 0,
+  listeners: new Set(),
+  getSnapshot() {
+    return this.seq;
+  },
+  getGroups() {
+    return this.groups;
+  },
+  getError() {
+    return this.error;
+  },
+  isLoading() {
+    return this.loading;
+  },
+  subscribe(listener) {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  },
+  emit() {
+    for (const listener of [...this.listeners]) {
+      try {
+        listener();
+      } catch {
+        /* 订阅者异常不阻断其余通知 */
+      }
+    }
+  },
+  /** 拉取结果落地（`groups` 缺省 = 失败，保留旧清单并记录错误）。 */
+  set({ groups, error } = {}) {
+    if (Array.isArray(groups)) {
+      this.groups = groups;
+      this.error = null;
+    } else {
+      this.error = typeof error === "string" && error ? error : "proposals fetch failed";
+    }
+    this.loading = false;
+    this.seq += 1;
+    this.emit();
+  },
+  setLoading(loading) {
+    const next = loading === true;
+    if (this.loading === next) return;
+    this.loading = next;
+    this.emit();
   }
 };

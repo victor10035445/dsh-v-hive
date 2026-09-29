@@ -33,9 +33,13 @@ DeepSeek Harness Web 插件：用 three.js 构建 3D「无限蜂巢」——工�
 
 ### 模型工具（召唤链路）
 
-- `hive_summon`：召唤新蜂——建会话 → 绑蜂种 → 选模型 → 投首条消息
-- `hive_wait`：事件驱动等待目标会话归静（30min 上限，取消传播）
-- 会话内模型可自主「召唤 → 等完工 → 回报」
+- `hive_summon`：召唤新蜂——建会话 → 绑蜂种 → 选模型 → 投首条消息；首条消息带
+  `⟡工具召唤（非指令）·蜂种名` 可辨识前缀（显式声明数据非指令）
+- `hive_wait`：事件驱动等待目标会话归静（30min 上限，取消传播）；归静返回体附带
+  `finalMessage`（目标末条 assistant 正文，8 000 码点截断并置
+  `finalMessageTruncated`，不可得时省略）——读蜂输出只用本工具，禁止触碰
+  `~/.dsh/sessions`
+- 会话内模型可自主「召唤 → 等完工 → 回报正文」
 
 ### 交互细节
 
@@ -45,9 +49,135 @@ DeepSeek Harness Web 插件：用 three.js 构建 3D「无限蜂巢」——工�
 
 ### 设置与入口
 
-- ⚙ 页内设置：场景（动画/无人机/水印/快捷键/镜头跟随）、外观（墙体/配色/饰条）、布局（阵列参数）
-- 入口：侧栏底部「Hive」座位按钮 + 会话头回巢按钮 + 快捷键（默认 Alt+H）
+- ⚙ 页内设置：场景（动画/无人机/水印/快捷键/镜头跟随）、外观（墙体/配色/饰条）、布局（阵列参数）、
+  **语音**（宿主凭据只写不读的填写框 / 宿主侧偏好表单 / 页签级会话设置三层分区）
+- 入口：侧栏底部「Hive」座位按钮 + 会话头回巢按钮 + 快捷键（默认 Alt+H）+ 页头 🎙 语音工作台
 - 布局与道具栏配置由宿主持久化（`~/.dsh/storages/dsh-hive.json`，revision 乐观锁），SSE 跨页签同步
+
+### 语音工作台（add-hive-voice-desk）
+
+页头 🎙 打开右下角工作台。设计基调是**段落制口述**（不是实时双工）：成段说话 → 停顿收段 →
+拼接稿可编辑 → 停顿够久（默认 8s）自动应答。
+
+- **说话键两种用法**：**单击**进入监听（麦克风保持开启，按钮变「结束会话」，再单击即结束）；
+  **按住**说话则松手收当前段（精确控制单段）。键盘 `Alt+Space` 同款（轻点=切换，按住=收段）。
+- **分段与转写**：停顿即收段（单段上限 30s 自动切分续录）；只有累计有效语音够长（≥250ms）的段才送转写，
+  咳嗽/键盘声之类的噪声段在本地丢弃；上游没听出内容时给**中性提示**（「没听到内容，可重录」）而不是报错；
+  段文本以 chips 呈现，可删除 / 重录；转写串行执行并按段号回填（乱序不会拼错稿）。
+- **「继续上次」**：会话结束时留下内存快照（拼接稿 + 多轮历史 + 文档产物），唤醒后说「继续上次」
+  可恢复；刷新页面后无快照时播固定音「没有上一次」，不报错。
+- **双通路分流**：拼接稿先过**本地指令语法**，命中即执行**不调用任何 LLM**：
+  | 指令 | 例子 | 副作用 |
+  |---|---|---|
+  | 会话控制 | 「结束会话」「就到这里」「回到待机」 | 无 |
+  | 会话恢复 | 「继续上次」 | 无 |
+  | 蜂巢总览 | 「查看蜂巢」 | 无 |
+  | 蜂聚焦 | 「看看三号蜂」 | 无 |
+  | 召唤 | 「召唤两个侦察蜂」 | **有 → 确认卡** |
+  | 投递 | 「把总结发给三号蜂」 | **有 → 确认卡** |
+  | 确认/取消 | 「确认」「取消」「算了」 | 无 |
+  | 手动应答 | 「回答」「就这些」 | 无 |
+
+  匹配以**整段意图**为准：调研正文里出现的「召唤」「发给」字样不会劫持讨论（有负例冒烟）。
+- **副作用闸门**：召唤 / 投递命中先出确认卡 + 确认音并回显解析结果（如「三号蜂 = 「调研段落制 ASR」」），
+  说「确认」或点按钮才执行；30s（可调）不回应自动弹回，不悬置阻塞后续口述。
+- **蜂后应答（双 register）**：未命中的拼接稿走 `/voice/answer`——人设模板 + 多轮历史 + 客户端指称表 →
+  **DSH 已配置 provider**（临时蜂后会话取一次补全后立即归档）→ 一次产出 markdown 文档，
+  **首段即口语摘要**（TTS 流式朗读，播放中说话可打断并中止上游）→ 详细文档由宿主写入
+  `<目标工作区>/hive-voice/<YYYY-MM-DD>-<slug>.md`（排他创建 `-2/-3`，原子替换）。
+  文档卡片支持「发给蜂」投递与路径复制。
+- **固定语音资产**：指令应答音与附和短句是包内预生成 wav，运行期零 TTS 调用；附和只在段落间隙
+  播放并带 300ms 保护窗（防串音）；可在设置里关闭。
+- **焦点页约束**：只有焦点页出声/录音（失焦立即停播并中止上游），多标签各持独立会话。
+
+> **能力边界（重要）**：蜂后**只依据你这次的口述（+ 本会话多轮历史）作答**——不读文件、不翻别的会话。
+> 这是刻意的：临时蜂后会话跑在 `minimal` 工具面预设上（剥掉 `fs`/`fs-search`/`subagent`/`web`），
+> 避免它把其他会话的内容混进结论；万一某次真的调了工具，回执会弹可见警告。
+> 所以「帮我查一下某只蜂的资料」这类请求它会**如实回答拿不到**。要查某只蜂的产出，请用投递/召唤指令
+> （「把总结发给三号蜂」等），或直接打开那个会话。
+> 受控的「指名查询」指令需求已留档（`openspec/changes/add-hive-voice-desk/design.md` Q5），暂未实现。
+
+## 语音工作台的配置与资产
+
+### 凭据（只存宿主侧，SHALL NOT 下发浏览器）
+
+智谱 key 用于 **ASR + TTS**（文本应答复用 DSH 已配置的 provider，不需要智谱文本模型）。
+
+**首选：蜂巢页 ⚙ 设置 →「语音」节直接填**——粘贴 key 点「保存 key」（输入框恒空、永不回显已存值，
+可随时「清除」）。同一节还能编辑宿主侧偏好（音色 / 语速 / 文本通道 / 文本模型 / 产出上限 / 人设 /
+默认工作区 / ASR 热词编码），点「保存到宿主」一次写入。
+
+等效的手工路径（优先级更高，便于 CI 或多账号切换）：
+
+1. 环境变量 `ZHIPU_API_KEY` → `ZHIPUAI_API_KEY`
+2. `$DSH_HOME/hive-voice.json`：
+
+```jsonc
+{
+  "apiKey": "…",                 // 同 env，二者取其一；设置内填写也写在这里
+  "voice": "tongtong",           // tongtong | chuichui | xiaochen | jam | kazi | douji | luodo
+  "speed": 1,                    // 0.5–2
+  "textChannel": "dsh",          // dsh（默认，复用 DSH provider）| zhipu（兜底直调 chat/completions）
+  "textModel": { "provider": "…", "model": "…" },  // 可选；缺省用 modelCatalog().default
+  "personaId": "queen-research", // 人设模板
+  "targetWorkspaceId": "…",      // 默认落盘工作区（缺省 = 蜂巢页当前工作区）
+  "maxTokens": 4096,             // 产出 token 硬上限
+  "asrHotwordsEncoding": "repeat", // hotwords 的 multipart 编码：repeat（默认）| json
+  "textAgentPreset": "minimal"   // 临时蜂后会话的 agent 预设（默认 minimal：剥掉 fs/subagent/web 等工具面）
+}
+```
+
+> **为什么默认 `minimal`**：临时蜂后会话是 DSH 的完整 agent 会话。用宿主默认的 `standard` 预设时，
+> 它带着 `fs`/`fs-search`/`subagent`/`web` 等工具且继承宿主的沙箱策略，**模型有能力去读取别的会话
+> 或工作区历史**——实测会出现「应答里带出其他会话信息」。`minimal` 只留一个常驻 shell。
+> 插件另有一层可见性兜底：若某次应答确实调用了工具，回执会明确警告
+> 「⚠️ 本次应答调用了工具（…），内容可能引用了会话外信息」。要彻底消除需要 DSH 提供
+> **无工具的一次性补全入口**（当前不存在）。
+
+配置**每请求读一次**，改完立即对 ASR/TTS/应答生效（无需重启）。`/api/dsh-hive/voice/status` 与
+`PUT /api/dsh-hive/voice/config` 的响应体**均不含 key**，只回「已配置 / 未配置 / 缺文本模型 + 来源」；
+设置内写入是**只写不读**通路（key 从不下发浏览器，与既有 `/send`、`/summon` 同层同信任模型）。
+文本模型不可路由（`routableProviders` 为空）时 `/voice/answer` 返回结构化 `no-model`，工作台给引导文案。
+
+> 兜底链路（`textChannel: "zhipu"`）直调 `POST /api/paas/v4/chat/completions`，**不是默认路径**：
+> 仅在确认 DSH 临时蜂后会话形态不可用时启用。
+
+### 固定语音资产（包内预生成 wav）
+
+指令应答音与附和短句由 `scripts/build-voice-assets.mjs` 在开发期用 GLM-TTS 一次性生成到
+`assets/voice/*.wav`（清单唯一事实源：`src/hive/voice/assets.mjs`）：
+
+```sh
+pnpm voice:build --dry-run            # 只列清单，不发请求
+pnpm voice:build                      # 全量生成（需要 key）
+pnpm voice:build --voice jam --speed 1.1
+pnpm voice:build --rate 24000 --no-trim   # 关掉归一化（保留上游原始格式）
+pnpm voice:build --check              # 只校验既有资产（体积预算/缺失），不需要 key
+```
+
+**归一化是必需的**（2026-09-27 真实上游实测）：GLM-TTS 非流式 wav 是 24 kHz 单声道 PCM16
+（48 KB/秒），而且**每条前面挂着 ≈2.0 s 低电平水印噪声**（峰值约 5%，人声段约 71%）——
+「好的」原始就有 2.51 s / 118 KB。脚本因此内置 `normalizeCueWav`：按**相对阈值**
+（`全局峰值 × 0.15`）切出人声段 → 降到 16 kHz 单声道 → 重编码。当前 22 条资产实测
+**0.43–1.39 s / 13.4–43.4 KB / 合计 628 KB**（上游原始合计 3051 KB）。
+
+> **水印说明**：`watermark_enabled` 默认为 `true`（显式 + 隐式数字水印，政策要求），且实测
+> **显式传 `false` 不生效**（文件反而更长）——官方说明只对完成「去水印」流程的账号有效。
+> 因此上面的归一化是在**保留水印**的前提下把体积压下来的；本插件不代改该默认值。
+
+纪律：**无 key 时非零退出且不产出半套资产**（全部音频先在内存生成、归一化、过预算后才一次性落盘）；
+预算单条 ≤80 KB、总量 ≤1.5 MB（按实测标定；包内 GLB 模型约 9 MB，资产占比很小）；
+上游错误码会翻译成可执行指引（1113 余额不足 / 1000 鉴权失败 / 1214 音色不存在 / 1301 限流）。
+资产缺失时工作台降级为静音 + 一行提示，链路不报错。
+
+### 体积与成本口径
+
+- ASR：按音频分钟计费（`glm-asr-2512`），单段 ≤30s、≤25MB；上传面独立 2MB 上限（不复用 512KB JSON 口径）。
+- TTS：仅**摘要段**合成（人设模板约定首段 2–4 句、可直接朗读），文档正文不朗读；
+  固定应答音零成本（预生成资产）。运行时一次摘要的流式合成实测：**首个可播音频帧 833 ms**、
+  该句 3 帧 / 415 KB PCM（音频不落盘，只在内存里边收边播）。
+- 文本应答：走 DSH 已配置 provider 的既有额度，插件不另收 key；
+  实测一份完整文档的端到端时延 **≈23 s**（deepseek-flash + reasoning max，含落盘）。
 
 ## 安装
 
@@ -82,8 +212,8 @@ dsh plugin --profile web add "<tgz 的绝对路径>"
 ```sh
 pnpm install
 pnpm build   # src/client.jsx → lib/client.js；src/index.mjs → lib/index.js
-pnpm check   # 语法检查
-pnpm test    # 35 个冒烟测试
+pnpm check   # 语法检查（含 lib/hive-voice.mjs）
+pnpm test    # 39 个冒烟测试（含 voice-grammar / voice-session / voice-host / voice-ui）
 ```
 
 改客户端源码后 `pnpm build` 即触发 client-hmr 免刷新重载；改宿主半区（`src/index.mjs`）需重启 dsh。
@@ -94,10 +224,11 @@ pnpm test    # 35 个冒烟测试
 
 | 端 | 内容 |
 |---|---|
-| 宿主 `lib/index.js` | cordis 插件：`/api/dsh-hive/state`（zod + 乐观锁 + 原子写）、`/events`（SSE 广播）、`/summon`（槽位召唤）、`/send`（蜂栏直发）；注册模型工具 `hive_summon` / `hive_wait` |
-| 客户端 `lib/client.js` | esbuild 懒 CJS 工厂；react / @deepseek-ai/* external，three 打进包内 |
+| 宿主 `lib/index.js` | cordis 插件：`/api/dsh-hive/state`（zod + 乐观锁 + 原子写）、`/events`（SSE 广播）、`/summon`（槽位召唤）、`/send`（蜂栏直发）、`/assets/{models,voice}/<file>`（白名单子目录静态资产）、`/voice/{status,asr,tts,answer,index}`（语音代理：multipart 转写 / SSE 转发 / 双 register 应答 + 落盘 / 索引）；注册模型工具 `hive_summon` / `hive_wait` |
+| 宿主纯逻辑 `lib/hive-voice.mjs` | 语音口径常量、凭据解析、multipart 与 WAV 解析、热词表、人设模板与提示词、`spoken` 抽取、落盘文件名与排他创建、截断判定 |
+| 客户端 `lib/client.js` | esbuild 懒 CJS 工厂；react / @deepseek-ai/* external，three 打进包内；`src/hive/voice/*`（grammar / recorder / session / speech / desk）随包 |
 | `cordis.patch.yml` | loader `- insert` 注册 |
-| `package.json` | `dsh.bundle.patch` / `dsh.client.platform:"web"` 声明 |
+| `package.json` | `dsh.bundle.patch` / `dsh.client.platform:"web"` 声明；`files` 含 `assets/`（模型与语音资产） |
 
 道具栏配置持久化于布局文档的 optional `hotbars` 字段（三栏：hive / bee / floor，每栏上限 32，内置卡不落盘）：
 

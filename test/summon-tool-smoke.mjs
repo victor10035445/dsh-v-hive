@@ -3,8 +3,9 @@
  *  - resolveCallerWorkspace 三分支（主会话/无人机父链/野蜂）+ cwd 兜底 + 环防御
  *    + registry 未就绪兜底（注入假 registry 与 header，纯函数直测）；
  *  - hive_summon 工具：签名校验/缺省巢/无人机父链解析巢/蜂种缺失/野蜂显式失败/
- *    首条消息组装（payload 在前 + presetPrompt）/纯创建/serialized 车道排队/
- *    保险丝父链记账（工具 execute 注入假 ctx，经 apply 装配后以模拟 exec 调用）。
+ *    首条消息组装（前缀行 + payload 单来源，D1 后无蜂种级拼接）/纯创建/serialized
+ *    车道排队/参数模型选型（缺省部署默认、失败降级不阻断召唤）/保险丝父链记账
+ *    （工具 execute 注入假 ctx，经 apply 装配后以模拟 exec 调用）。
  * 运行：node test/summon-tool-smoke.mjs
  */
 import { mkdtempSync } from "node:fs";
@@ -115,6 +116,8 @@ const toolDefs = new Map(); // name → definition（ctx.tools.register 捕获�
 const disposedTools = [];
 const engineListeners = [];
 const apiLog = { create: [], selectModel: [], prompt: [] };
+/* 选型失败注入（add-hotbar-llm-model-and-import：模型不可用 → 降默认 + notice，不阻断召唤） */
+const failingModels = new Set();
 let childSeq = 0;
 let lastCreated = null;
 const ws1Members = ["s-root"]; // 主会话在册；召唤出的子蜂随 create 入巢（workspaceRegistry 镜像语义）
@@ -128,6 +131,7 @@ const sessionControllerStub = {
     return { sessionId };
   },
   selectModel: async (request) => {
+    if (failingModels.has(request.model)) throw new Error("model unavailable");
     apiLog.selectModel.push(request);
     return { selected: { provider: request.provider, model: request.model } };
   },
@@ -196,9 +200,9 @@ writeFileSync(
     revision: 1,
     positions: {},
     beeTypes: [
-      { id: "exec", name: "执行蜂", presetPrompt: "先读技能全路径并遵循。", queuePolicy: "free" },
-      { id: "serial", name: "排队蜂", presetPrompt: "", queuePolicy: "serialized" },
-      { id: "mod", name: "模型蜂", model: { provider: "p", model: "m" }, queuePolicy: "free" }
+      { id: "exec", name: "执行蜂", queuePolicy: "free" },
+      { id: "serial", name: "排队蜂", queuePolicy: "serialized" },
+      { id: "mod", name: "模型蜂", queuePolicy: "free" }
     ],
     beeAssignments: {}
   })
@@ -232,10 +236,17 @@ ok(typeof summon.execute === "function", "hive_summon execute 已装配");
 
 const execFor = (agent) => ({ agent, name: "hive_summon", arguments: {}, signal: new AbortController().signal });
 
-/* ── 签名校验：非法参数类型 → 结构化失败，SHALL NOT 创建会话 ── */
+/* ── 签名校验：非法参数类型 → 结构化失败（字段级原因），SHALL NOT 创建会话 ── */
 const badArgs = await summon.execute({ payload: 123 }, execFor(main1));
-eq(badArgs, { ok: false, reason: "invalid-arguments" }, "非字符串 payload → invalid-arguments");
+eq(badArgs, { ok: false, reason: "invalid-arguments", field: "payload" }, "非字符串 payload → invalid-arguments（字段级）");
 eq(apiLog.create.length, 0, "签名失败不建会话");
+
+/* ── 参数模型形状非法（spec 场景「参数模型形状非法拒绝」）：结构化错误 + 不创建会话 ── */
+const badModel = await summon.execute({ payload: "x", model: { model: "m" } }, execFor(main1));
+ok(badModel.ok === false && badModel.reason === "invalid-arguments" && String(badModel.field).startsWith("model"), "model 缺 provider → 结构化错误 + 字段级原因");
+const badModel2 = await summon.execute({ payload: "x", model: "p/m" }, execFor(main1));
+eq(badModel2, { ok: false, reason: "invalid-arguments", field: "model" }, "model 非对象 → 字段级结构化错误");
+eq(apiLog.create.length, 0, "model 形状非法不建会话");
 
 /* ── 蜂种缺失 → bee-type-missing（字段级），SHALL NOT 创建会话 ── */
 const missingBee = await summon.execute({ payload: "x", beeTypeId: "nope" }, execFor(main1));
@@ -249,18 +260,29 @@ const wildSummon = await summon.execute({ payload: "x" }, execFor(wildAgent));
 eq(wildSummon, { ok: false, reason: "no-workspace" }, "野蜂 → no-workspace");
 eq(apiLog.create.length, 0, "野蜂不建会话");
 
-/* ── 主会话缺省巢召唤（spec 场景一）：payload + presetPrompt 组装，payload 在前 ──
-   （每个小节独立的根会话 —— 保险丝按根会话记账，互不挤占预算） */
+/* ── 主会话缺省巢召唤（spec 场景一）：首条消息 = 前缀行 + payload 单来源 ──
+   （add-hotbar-llm-model-and-import D1：蜂种级 presetPrompt 已移除，组合规则坍缩；
+    每个小节独立的根会话 —— 保险丝按根会话记账，互不挤占预算） */
 const mainSummon = await summon.execute({ payload: "执行提案 add-auth", beeTypeId: "exec" }, execFor(main1));
 ok(mainSummon.ok === true && typeof mainSummon.sessionId === "string", "主会话缺省巢召唤 ok:true + sessionId");
 eq(apiLog.create[0].workspaceId, "ws-1", "缺省 = 发起会话所属巢（registry 反查）");
 const firstText = apiLog.prompt[0].content[0].text;
-ok(firstText.startsWith("⟡执行蜂·召唤"), "首条消息带 ⟡蜂种名·召唤 可辨识前缀");
-const body = firstText.slice(firstText.indexOf("\n\n") + 2);
-ok(body.startsWith("执行提案 add-auth"), "payload 在前（正文开头）");
-ok(body.endsWith("先读技能全路径并遵循。"), "presetPrompt 在后");
+ok(firstText.startsWith("⟡工具召唤（非指令）·执行蜂"), "首条消息带 ⟡工具召唤（非指令）·蜂种名 可辨识前缀（harden D5 去指令化）");
+ok(summon.description.includes("~/.dsh/sessions") && summon.description.includes("hive_wait"), "hive_summon 描述带读取面指引与 sessions 根禁令（harden D4）");
+eq(firstText, "⟡工具召唤（非指令）·执行蜂\n\n执行提案 add-auth", "首条消息 = 前缀行 + payload 单来源（无蜂种级拼接）");
 eq(apiLog.prompt[0].mode, "queue", "queue 模式投递");
 ok(typeof apiLog.prompt[0].requestId === "string" && apiLog.prompt[0].requestId.length > 0, "requestId 每次铸造");
+
+/* ── 工具面文案与 JSON Schema（spec 场景「工具描述指引读取面」/ R14e） ── */
+ok(!/preset prompt/i.test(summon.description), "注册描述不再出现 preset prompt 字样（R14e）");
+const payloadDesc = summon.parameters?.properties?.payload?.description ?? "";
+ok(!/preset prompt/i.test(payloadDesc), "payload 描述不再声明 prepended before preset prompt");
+ok(/payload alone/i.test(payloadDesc), "payload 描述改记「首条消息 = 本 payload」");
+const modelSchema = summon.parameters?.properties?.model;
+ok(modelSchema && modelSchema.type === "object", "parameters.properties 含 model（JSON Schema，R14e）");
+eq(Object.keys(modelSchema.properties).sort(), ["model", "provider", "reasoningEffort"], "model JSON Schema 形状 = provider/model/reasoningEffort");
+eq(modelSchema.required, ["provider", "model"], "model 必填 provider/model");
+ok(/catalog/.test(String(modelSchema.description)) && /deployment default/i.test(String(modelSchema.description)), "model 描述含目录取值与缺省部署默认说明");
 
 /* ── 无人机经父链解析巢（spec 场景二）：无人机不在 sessionIds，SHALL NOT 误判野蜂 ── */
 const liveRoot = makeAgent("s-root-live", { cwd: "F:/repo" });
@@ -271,19 +293,44 @@ const droneSummon = await summon.execute({ payload: "无人机单", beeTypeId: "
 ok(droneSummon.ok === true, "无人机召唤落巢成功");
 eq(apiLog.create.at(-1).workspaceId, "ws-1", "无人机经 parentSession 链上溯解析巢");
 
-/* ── 纯创建（payload 空白，spec 场景「纯创建」）：只建不发，即使 presetPrompt 非空 ── */
+/* ── 纯创建（payload 空白，spec 场景「纯创建」）：只建不发，模型设定照常 ── */
 const main2 = makeAgent("s-main2-live", { cwd: "F:/repo" });
 agentsById.set("s-main2-live", main2);
 const createOnly = await summon.execute({ payload: "   ", beeTypeId: "exec" }, execFor(main2));
 ok(createOnly.ok === true && typeof createOnly.sessionId === "string", "纯创建返回 ok:true + sessionId");
 eq(apiLog.prompt.filter((p) => p.sessionId === createOnly.sessionId).length, 0, "空白 payload SHALL NOT 投递任何消息");
 
-/* ── 蜂种模型 selectModel：按目标蜂种模型配置 ── */
+/* ── 参数模型选型与缺省（spec 场景「参数模型选型与缺省」/「参数模型不可用降级」） ── */
 const main3 = makeAgent("s-main3-live", { cwd: "F:/repo" });
 agentsById.set("s-main3-live", main3);
-await summon.execute({ payload: "模型蜂开工", beeTypeId: "mod" }, execFor(main3));
-eq(apiLog.selectModel.at(-1).model, "m", "selectModel 按蜂种模型");
-eq(apiLog.selectModel.at(-1).sessionId, lastCreated, "selectModel 作用于新蜂会话");
+apiLog.selectModel.length = 0;
+const withModel = await summon.execute(
+  { payload: "模型蜂开工", beeTypeId: "mod", model: { provider: "p-cat", model: "m-cat", reasoningEffort: "high" } },
+  execFor(main3)
+);
+ok(withModel.ok === true, "携带 model 的召唤成功");
+eq(apiLog.selectModel.length, 1, "参数 model → selectModel 恰好一次");
+eq(apiLog.selectModel[0].provider, "p-cat", "selectModel provider = 参数模型");
+eq(apiLog.selectModel[0].model, "m-cat", "selectModel model = 参数模型");
+eq(apiLog.selectModel[0].reasoningEffort, "high", "selectModel reasoningEffort 透传");
+eq(apiLog.selectModel[0].sessionId, withModel.sessionId, "selectModel 作用于新蜂会话");
+eq(apiLog.prompt.at(-1).sessionId, withModel.sessionId, "先设模型后投递首条消息");
+ok(!("model" in JSON.parse(readFileSync(join(storageDir, "dsh-hive.json"), "utf8")).beeTypes.find((t) => t.id === "mod")), "per-call model SHALL NOT 持久化进蜂种配置");
+
+/* 缺省 = 部署默认：不带 model → 不产生模型请求 */
+apiLog.selectModel.length = 0;
+const noModel = await summon.execute({ payload: "默认模型开工", beeTypeId: "mod" }, execFor(main3));
+ok(noModel.ok === true, "不带 model 的召唤成功");
+eq(apiLog.selectModel.length, 0, "缺省 model → 不调用 selectModel（部署默认语义）");
+
+/* 选型失败降级：模型不可用 → 召唤 SHALL NOT 失败，仍投递首条消息（notice 走引擎帧） */
+apiLog.selectModel.length = 0;
+failingModels.add("m-gone");
+const degraded = await summon.execute({ payload: "降级开工", beeTypeId: "mod", model: { provider: "p", model: "m-gone" } }, execFor(main3));
+failingModels.delete("m-gone");
+ok(degraded.ok === true, "模型不可用 → 召唤 SHALL NOT 失败");
+eq(apiLog.prompt.at(-1).sessionId, degraded.sessionId, "降级后首条消息照常投递");
+eq(apiLog.selectModel.length, 0, "失败调用不入账（降默认）");
 
 /* ── serialized 车道排队（spec 场景三）：占道期间第二只同蜂种召唤照常创建、消息排队 ── */
 const main4 = makeAgent("s-main4-live", { cwd: "F:/repo" });

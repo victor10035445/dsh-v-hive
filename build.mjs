@@ -44,9 +44,11 @@ console.log(`client bundle: ${kb(result.metafile.outputs["lib/client.js"].bytes)
 /* 宿主半区：纯 ESM 源码直出（node --check 可直接校验）。
    custom-bee-types 起宿主半区拆出纯逻辑模块（design D9）：入口复制为
    lib/index.js（package main 不变），纯逻辑模块保留 .mjs 扩展名复制
-   （lib/index.js 的相对 import 说明符 ./<name>.mjs 与文件名一致）。 */
+   （lib/index.js 的相对 import 说明符 ./<name>.mjs 与文件名一致）。
+   add-hive-voice-desk 2.8：hive-voice.mjs 入列（语音纯逻辑层，审阅 R17）。
+   add-hotbar-llm-model-and-import 3.1：plugin-imports.mjs 入列（导入源只读纯模块）。 */
 copyFileSync(new URL("./src/index.mjs", import.meta.url), new URL("./lib/index.js", import.meta.url));
-const HOST_MODULE_FILES = ["bee-types.mjs", "capabilities.mjs", "lane.mjs", "status-cards.mjs"];
+const HOST_MODULE_FILES = ["bee-types.mjs", "capabilities.mjs", "lane.mjs", "proposals.mjs", "hive-voice.mjs", "plugin-imports.mjs"];
 for (const file of HOST_MODULE_FILES) {
   copyFileSync(new URL("./src/" + file, import.meta.url), new URL("./lib/" + file, import.meta.url));
 }

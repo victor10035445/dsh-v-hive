@@ -26,7 +26,7 @@ import { HiveScene } from "./hive/scene.mjs";
 import { deriveWorld, sessionsBriefOf } from "./bee-model.mjs";
 import { sessionsBriefStore } from "./brief.mjs";
 import { keyboardGuarded } from "./hive/keyboard.mjs";
-import { fetchState, putState, sendCommand, subscribeLayout, hatchBee, laneAction, fetchModels, resetLatch, summonBee } from "./api.mjs";
+import { fetchState, putState, sendCommand, subscribeLayout, hatchBee, laneAction, fetchModels, resetLatch, summonBee, fetchImportButtons, fetchProposals, setProposalStatus, voiceStatus, voiceConfig, voiceIndex, voiceAsr, voiceAnswer } from "./api.mjs";
 import {
   appendPrompt,
   workerBeeIdOf,
@@ -35,24 +35,23 @@ import {
   effectiveHotbarSlots,
   HOTBAR_RESIDENT_KINDS,
   validateSlotDraft,
+  isValidSlotModel,
+  normalizeSlotModel,
   HOTBAR_COLUMN_LIMIT,
   HOTBAR_KINDS
 } from "./hotbars.mjs";
 import { validateBeeTypesDraft, normalizeBeeTypes, BEE_APPEARANCE_MODELS, DEFAULT_APPEARANCE_MODEL } from "./bee-types.mjs";
-import {
-  normalizeStatusCards,
-  validateStatusCardDraft,
-  completionPool,
-  completionSessions,
-  advanceCursor,
-  snapshotSessions,
-  statusBarReserve,
-  MAX_STATUS_CARDS
-} from "./status-cards.mjs";
-import { hiveStore, beeTypesStore, beeEngineStore, hotbarsStore, sanitizeLayout, LAYOUT_DEFAULTS, PANEL_LIMITS, BAR_LIMITS, REPORT_ROWS_LIMIT, CHROME_SCHEMES } from "./store.mjs";
+/* 模型/推理档位下拉共享派生（add-hotbar-llm-model-and-import D5/R3）：两维键 +
+   模型选项 + 档位选项三层纯函数——指令编辑模态是唯一消费方（值轨道单源化）。 */
+import { MODEL_KEY_NONE, buildModelOptions, effortOptionsOf, modelKeyOf } from "./model-select.mjs";
+/* 提案面板纯逻辑（add-proposal-panel 5.x）：状态枚举（色点 + i18n 名称）、状态位键
+   构造、报告让位 reserve（原 status-cards.mjs 的 statusBarReserve 换主迁入）。 */
+import { PROPOSAL_STATUSES, panelReserve, proposalStateKey, proposalStatusColor } from "./proposals.mjs";
+import { hiveStore, beeTypesStore, beeEngineStore, hotbarsStore, proposalsStore, sanitizeLayout, LAYOUT_DEFAULTS, PANEL_LIMITS, BAR_LIMITS, REPORT_ROWS_LIMIT, CHROME_SCHEMES } from "./store.mjs";
 import { CSS } from "./styles.mjs";
 import { APPEARANCE_DEFAULTS, APPEARANCE_REV } from "./hive/palette.mjs";
 import { CombatLogFeed, EV_KIND } from "./hive/combat-log.mjs";
+import { createVoiceDesk, VoiceDeskPanel, VoiceSettingsBody, useVoiceDeskSnapshot, assembleDeliveryPrompt } from "./hive/voice/desk.jsx";
 
 const PLUGIN_ID = "dsh-v-hive";
 const NS = "dsh-hive";
@@ -466,7 +465,7 @@ const zh = {
   "hive.collapse": "折叠无人机",
   "hive.openSession": "打开会话",
   "hive.archive": "归档",
-  "hive.archivedTag": "已归档 · 储蜜只读",
+  "hive.archivedTag": "已归档 \xB7 储蜜只读",
   "hive.todos": "todo {done}/{total}",
   "hive.runningCount": "运行中 {n}",
   "hive.activeCount": "活跃 {n}",
@@ -498,7 +497,7 @@ const zh = {
   "hive.settings.showFps": "FPS 计数",
   "hive.settings.showFpsHint": "画布左上角帧率读数（调试用）",
   "hive.settings.cameraPitch": "相机俯角",
-  "hive.settings.cameraPitchHint": "俯仰锁定为该值：旋转/平移/缩放/聚焦都不改变俯仰；默认 45°，范围 15°–70°",
+  "hive.settings.cameraPitchHint": "俯仰锁定为该值：旋转/平移/缩放/聚焦都不改变俯仰；默认 45\xB0，范围 15\xB0–70\xB0",
   "hive.settings.drones": "无人机",
   "hive.drones.activeOnly": "仅活跃",
   "hive.drones.all": "全部显示",
@@ -508,7 +507,6 @@ const zh = {
   "hive.settings.followHint": "切换会话与打开蜂巢页时镜头自动平移定位到对应蜜蜂（默认开）",
   "hive.settings.title": "设置",
   "hive.settings.close": "关闭",
-  /* 模态共享词条（蜂群编辑沿用；旧快捷指令专属词条已随拆除移除） */
   "hive.qc.moveUp": "上移",
   "hive.qc.moveDown": "下移",
   "hive.qc.save": "保存",
@@ -517,10 +515,112 @@ const zh = {
   "hive.qc.confirmDiscard": "有未保存的修改，放弃并关闭？",
   "hive.qc.discard": "放弃修改",
   "hive.qc.keepEditing": "继续编辑",
-  /* 设置左纵排（context-hotbar-rework 4.x） */
   "hive.settings.navScene": "场景",
   "hive.settings.navAppearance": "外观",
   "hive.settings.navLayout": "布局",
+  "hive.settings.navVoice": "语音",
+  "hive.voice.title": "语音工作台",
+  "hive.voice.close": "收起语音工作台",
+  "hive.voice.entryDisabled": "语音未配置：设置智谱 key 后可用",
+  "hive.voice.ptt": "按住说话",
+  "hive.voice.pttStart": "开始说话",
+  "hive.voice.pttEnd": "结束会话",
+  "hive.voice.pttHint": "单击进入监听（麦克风保持开启），再单击结束会话；按住则松手收段",
+  "hive.voice.segEmpty": "第 {n} 段没听到内容（已保留，可重录）",
+  "hive.voice.toolWarning": "⚠️ 本次应答调用了工具（{tools}），内容可能引用了会话外信息",
+  "hive.voice.answer": "回答",
+  "hive.voice.wake": "唤醒",
+  "hive.voice.end": "结束",
+  "hive.voice.stateIdle": "待机",
+  "hive.voice.stateListening": "监听中",
+  "hive.voice.stateSpeaking": "应答播放",
+  "hive.voice.statePaused": "失焦暂停",
+  "hive.voice.statusReady": "语音就绪",
+  "hive.voice.statusNoKey": "未配置智谱 key",
+  "hive.voice.statusNoModel": "无可用文本模型",
+  "hive.voice.keySource": "key 来源：{src}",
+  "hive.voice.segPending": "转写中…",
+  "hive.voice.segFailed": "转写失败",
+  "hive.voice.rerecord": "重录该段",
+  "hive.voice.delete": "删除该段",
+  "hive.voice.confirmOk": "确认",
+  "hive.voice.confirmCancel": "取消",
+  "hive.voice.confirmGeneric": "待确认动作",
+  "hive.voice.sendTo": "发给蜂",
+  "hive.voice.copyPath": "复制路径",
+  "hive.voice.workspace": "目标工作区",
+  "hive.voice.workspaceAuto": "跟随当前工作区",
+  "hive.voice.assetsMissing": "语音资产缺失：运行 pnpm voice:build 生成 assets/voice/*.wav",
+  "hive.voice.micFailed": "麦克风不可用（{msg}）",
+  "hive.voice.mic.permission-denied": "权限被拒绝，请在浏览器地址栏放行麦克风",
+  "hive.voice.mic.no-device": "未检测到输入设备",
+  "hive.voice.mic.insecure-context": "非安全上下文（https 或 127.0.0.1 才可用）",
+  "hive.voice.mic.device-busy": "设备被其他程序占用",
+  "hive.voice.mic.aborted": "采集被中断",
+  "hive.voice.mic.unknown": "未知原因",
+  "hive.voice.noSnapshot": "没有上一次会话",
+  "hive.voice.resumed": "已恢复上一次会话",
+  "hive.voice.overview": "蜂巢总览",
+  "hive.voice.focused": "已聚焦 {who}",
+  "hive.voice.noBee": "未找到该蜂，候选：{list}",
+  "hive.voice.noCandidate": "（当前没有可指称的蜂）",
+  "hive.voice.cancelled": "已取消待确认动作",
+  "hive.voice.confirmTimeout": "确认超时，动作已取消",
+  "hive.voice.summoned": "已召唤 {n} 只蜂",
+  "hive.voice.summonFailed": "召唤失败：{msg}",
+  "hive.voice.sent": "已发送给 {who}",
+  "hive.voice.sendFailed": "发送失败：{msg}",
+  "hive.voice.noWorkspace": "未解析到可用工作区，无法召唤",
+  "hive.voice.pickBee": "请先选中一只蜂再投递",
+  "hive.voice.unavailable": "语音应答不可用：{msg}",
+  "hive.voice.answerFailed": "应答失败：{msg}",
+  "hive.voice.ttsFailed": "语音合成失败：{msg}",
+  "hive.voice.saved": "文档已落盘：{path}",
+  "hive.voice.truncated": "（内容被长度上限截断）",
+  "hive.voice.segmentLimit": "分段数已达上限，请先应答或删除旧段",
+  "hive.voice.asrFailed": "第 {n} 段转写失败：{msg}",
+  "hive.voice.ended": "语音会话已结束",
+  "hive.voice.deliveryDefaultTitle": "语音整理产物",
+  "hive.voice.keyStatus": "凭据状态",
+  "hive.voice.keyReady": "已配置",
+  "hive.voice.keyMissing": "未配置",
+  "hive.voice.keyNoModel": "缺文本模型",
+  "hive.voice.groupHost": "宿主凭据（只写不读，存 $DSH_HOME/hive-voice.json）",
+  "hive.voice.groupPrefs": "宿主侧偏好（写在 $DSH_HOME/hive-voice.json）",
+  "hive.voice.groupSession": "本页签设置（localStorage，即时生效）",
+  "hive.voice.apiKey": "智谱 API Key",
+  "hive.voice.keyPlaceholderSet": "已配置——粘贴新 key 可覆盖",
+  "hive.voice.keyPlaceholderEmpty": "粘贴智谱 API Key",
+  "hive.voice.saveKey": "保存 key",
+  "hive.voice.clearKey": "清除",
+  "hive.voice.keySaved": "key 已保存（界面不回显）",
+  "hive.voice.keyCleared": "key 已清除",
+  "hive.voice.saveHost": "保存到宿主",
+  "hive.voice.saving": "保存中…",
+  "hive.voice.configSaved": "已保存到宿主配置",
+  "hive.voice.configFailed": "保存失败：{msg}",
+  "hive.voice.configStale": "宿主未加载语音配置路由：重启 dsh web 后可用",
+  "hive.voice.textChannel": "文本通道",
+  "hive.voice.channelDsh": "DSH 已配置 provider（默认）",
+  "hive.voice.channelZhipu": "智谱兜底直调",
+  "hive.voice.modelDefault": "跟随目录默认",
+  "hive.voice.maxTokens": "产出上限（token）",
+  "hive.voice.targetWorkspace": "默认目标工作区",
+  "hive.voice.hotwords": "ASR 热词编码",
+  "hive.voice.keyHint": "key 只存宿主侧：环境变量 ZHIPU_API_KEY / ZHIPUAI_API_KEY，或 $DSH_HOME/hive-voice.json",
+  "hive.voice.probe": "重新探测",
+  "hive.voice.textModel": "文本模型（DSH 已配置 provider）",
+  "hive.voice.textModelDefault": "跟随目录默认",
+  "hive.voice.voice": "音色",
+  "hive.voice.speed": "语速",
+  "hive.voice.silence": "静默应答阈值",
+  "hive.voice.confirmTimeoutLabel": "确认卡超时",
+  "hive.voice.seconds": "秒",
+  "hive.voice.persona": "人设模板",
+  "hive.voice.personaDefault": "宿主默认",
+  "hive.voice.backchannel": "停顿窗口附和",
+  "hive.voice.bargeIn": "打断能量阈值",
+  "hive.voice.watermarkNote": "GLM-TTS 生成的音频默认含显式+隐式水印（watermark_enabled 默认 true）；资产重建脚本见 README。",
   "hive.settings.layoutPanelGroup": "覆盖面板（右侧蜂群阵列）",
   "hive.settings.layoutPanelM": "列数 m",
   "hive.settings.layoutPanelN": "行数 n",
@@ -532,7 +632,6 @@ const zh = {
   "hive.settings.reportRowsHint": "面板锚定左下角；列表按行数定高，超出滚动",
   "hive.settings.layoutHint": "调整即时生效，仅保存在本页签",
   "hive.settings.resetAll": "恢复默认",
-  /* 指令编辑（context-hotbar-rework 5.x） */
   "hive.hb.title": "指令编辑",
   "hive.hb.close": "关闭指令编辑",
   "hive.hb.tabHive": "巢栏",
@@ -555,6 +654,14 @@ const zh = {
   "hive.hb.autoSendHint": "勾选后点击卡片直接发送；不勾选则填入输入框供审查回车",
   "hive.hb.pureSummonHint": "提示词留空 = 纯召唤（只建蜂不发消息）",
   "hive.hb.summonOffHint": "召唤关闭：提示词不接受，卡片在道具栏为禁用态",
+  /* 提案栏节（add-proposal-panel 5.6/5.7） */
+  "hive.hb.tabProposal": "提案栏",
+  "hive.hb.setStatus": "执行成功后置状态",
+  "hive.hb.proposalSummonHint": "勾选后点击卡片在提案所属工作区召唤新蜂；不勾选则发给当前会话蜂",
+  "hive.hb.proposalSlotHint": "提示词模板中的 {change} 会在执行时替换为选中的提案名；写 {{change}} 得到字面 {change}（不被替换）",
+  "hive.hb.proposalAutoSendHint": "勾选后点击卡片直接发送；不勾选则填入输入框供审查回车（该路径不置状态）",
+  "hive.hb.proposalPromptHint": "模板：{change} = 选中提案名；{{ 与 }} 会还原为单个花括号",
+  "hive.hb.proposalPromptPlaceholder": "如：继续推进 {change}，先读 proposal.md",
   "hive.hb.overflow": "超出阵列容量 {n} 个槽位——保存允许，但超出部分不在道具栏渲染",
   "hive.hb.dirty": "有未保存的修改",
   "hive.hb.saveStale": "保存未被宿主持久化（宿主半区可能是旧版本）——请重启 dsh 后重试",
@@ -563,32 +670,20 @@ const zh = {
   "hive.hb.err.missingPrompt": "蜂栏提示词不能为空白",
   "hive.hb.err.promptBlocked": "召唤/建蜂关闭时提示词不接受",
   "hive.hb.err.tooManySlots": "槽位数量超出上限 32",
-  /* 状态卡片（bee-status-cards）：完成状态栏 + 状态卡功能 */
-  "hive.status.aria": "完成状态栏",
-  "hive.status.cardTitle": "{name}：当前带蜜归蜂数 {count}",
-  "hive.status.default": "机械蜂",
-  "hive.status.send": "批量发送",
-  "hive.status.sendEmpty": "暂无完成蜂",
-  "hive.status.confirmTitle": "批量发送确认",
-  "hive.status.confirmPrompt": "预设提示词",
-  "hive.status.confirmTargets": "目标蜂数",
-  "hive.status.confirmHint": "将把预设提示词逐蜂发送给卡内全部完成蜂",
-  "hive.status.confirm": "确认发送",
-  "hive.status.cancel": "取消",
-  "hive.status.toastSent": "已发 {n} 只，{m} 只失败",
-  "hive.status.toastNone": "无目标完成蜂",
-  "hive.hb.tabStatus": "状态卡片",
-  "hive.hb.status.defaultRow": "机械蜂不可设置状态卡功能",
-  "hive.hb.status.promptPlaceholder": "预设提示词（发给该蜂种全部完成蜂）",
-  "hive.hb.status.autoSendHint": "勾选后点击卡片直接批量发送；不勾选则先弹人工确认",
-  "hive.hb.status.clear": "清除配置",
-  "hive.hb.status.cleared": "已清除配置",
-  "hive.hb.status.empty": "选择蜂种以配置状态卡功能。",
-  "hive.hb.status.err.missingType": "缺少蜂种 id",
-  "hive.hb.status.err.invalidPrompt": "提示词须为字符串",
-  "hive.settings.batchSendConfirm": "批量发送人工确认",
-  "hive.settings.batchSendConfirmHint": "关闭后，未勾选自动发送的状态卡点击即直发（不再弹确认）",
-  /* 情境道具栏（context-hotbar-rework 6.x） */
+  "hive.hb.err.invalidModel": "模型形状非法（需 provider + model）",
+  "hive.hb.model": "LLM 模型",
+  "hive.hb.effort": "推理档位",
+  "hive.hb.effortDefault": "模型默认档位",
+  "hive.hb.import": "导入快捷功能",
+  "hive.hb.importBusy": "导入中…",
+  "hive.hb.importHint": "从 dsh-v-skill-links 的快捷按钮导入到蜂栏草稿（重名跳过；保存后生效）",
+  "hive.hb.importLoading": "正在检查导入源…",
+  "hive.hb.importNotInstalled": "导入源不可用：dsh-v-skill-links 未安装或未启用",
+  "hive.hb.importServiceAbsent": "导入源不可用：宿主未装载 settings 服务",
+  "hive.hb.importStale": "导入失败：宿主未重启或版本较旧（缺少导入端点）——请重启 dsh 后重试",
+  "hive.hb.importRetry": "上次检查导入源失败——点击重试",
+  "hive.hb.importFailed": "导入失败：{err}",
+  "hive.hb.importSummary": "导入 {n} 条，跳过 {m} 条（重名），因容量未导入 {k} 条",
   "hive.bar.aria.hive": "巢栏道具栏",
   "hive.bar.aria.bee": "蜂栏道具栏",
   "hive.bar.aria.floor": "地板栏道具栏",
@@ -603,7 +698,10 @@ const zh = {
   "hive.bar.toastFloorPickFailed": "目录选择器不可用",
   "hive.bar.toastFloorSummonFailed": "建巢成功，但召唤失败（空巢已保留）",
   "hive.bar.toastSummonAppendFailed": "召唤成功，但提示词未能填入输入框（会话已打开，可手动粘贴）",
-  /* 内置默认动作卡（hotbar-default-actions 2.1，design D5；卡组用户定稿调整） */
+  "hive.bar.toastModelDegraded": "模型切换失败，已按会话当前模型发送",
+  /* 提案栏门控与 aria（add-proposal-panel 5.5/5.7；aria 经 "hive.bar.aria."+kind 拼键） */
+  "hive.bar.aria.proposal": "提案栏道具栏",
+  "hive.bar.proposalNoBee": "当前会话不是可直发的工蜂——请先选中一只蜂，或在提案卡上勾选「召唤新蜂」",
   "hive.bar.defaults.beeContinue": "继续",
   "hive.bar.defaults.beeContinuePrompt": "继续",
   "hive.bar.defaults.beeArchive": "归档会话",
@@ -614,11 +712,25 @@ const zh = {
   "hive.bar.defaults.badge": "内置",
   "hive.bar.defaults.hint": "添加自定义槽位后本栏默认卡收起",
   "hive.bar.defaults.hintResident": "蜂栏内置卡常驻显示，不随自定义槽位收回",
-  /* 工蜂阵列面板（context-hotbar-rework 7.x） */
   "hive.panel.empty": "空巢——还没有工蜂",
   "hive.panel.drones": "无人机：活跃 {a} / 总数 {n}",
   "hive.panel.selected": "已选 {n} 只",
-  /* 蜂群编辑（custom-bee-types 4.x） */
+  /* 提案面板与提案指令栏（add-proposal-panel 5.7） */
+  "hive.proposal.aria": "提案面板",
+  "hive.proposal.title": "提案",
+  "hive.proposal.refresh": "刷新提案清单",
+  "hive.proposal.refreshing": "正在刷新…",
+  "hive.proposal.empty": "暂无未归档提案。",
+  "hive.proposal.error": "提案清单拉取失败——点击刷新重试。",
+  "hive.proposal.status.none": "不设置",
+  "hive.proposal.status.reviewed": "已审阅",
+  "hive.proposal.status.executed": "已执行",
+  "hive.proposal.status.paused": "已暂停",
+  "hive.proposal.toast.statusSet": "已更新提案状态",
+  "hive.proposal.toast.statusFailed": "状态写入失败：{err}",
+  "hive.proposal.toast.missingVars": "模板占位符未插值：{names}（未发送）",
+  "hive.proposal.toast.badTemplate": "模板语法非法（花括号不成对，未发送）",
+  "hive.proposal.toast.sendFailed": "提案指令发送失败",
   "hive.swarm.title": "蜂群编辑",
   "hive.swarm.close": "关闭蜂群编辑",
   "hive.swarm.tabTypes": "蜂种列表",
@@ -627,12 +739,9 @@ const zh = {
   "hive.swarm.empty": "还没有自定义蜂种——机械蜂之外，点击「新增蜂种」创建第一只。",
   "hive.swarm.namePlaceholder": "蜂种名（如：设计蜂）",
   "hive.swarm.descPlaceholder": "描述（可选）",
-  "hive.swarm.presetPromptPlaceholder": "预设提示词（可选，工具召唤首条消息 = payload + 本字段）",
-  "hive.swarm.presetPromptHint": "B 侧行为定义：召唤该蜂种时附加的行为指引（数据走调用方的 payload）",
   "hive.swarm.queuePolicy": "排队策略",
   "hive.swarm.queueFree": "自由（不占道）",
   "hive.swarm.queueSerialized": "排队（同巢自动动作互斥）",
-  "hive.swarm.model": "对话模型（可选）",
   "hive.swarm.beeModel": "外观模型",
   "hive.beeModel.worker": "默认工蜂",
   "hive.beeModel.purple_worker": "紫工蜂",
@@ -670,7 +779,6 @@ const zh = {
   "hive.bee.err.missingName": "蜂种名称不能为空",
   "hive.bee.err.missingId": "缺少蜂种 id",
   "hive.bee.err.invalidId": "蜂种 id 形状非法（字母数字-_）",
-  "hive.bee.err.invalidModel": "模型形状非法（需 provider + model）",
   "hive.bee.err.invalidQueuePolicy": "排队策略非法",
   "hive.bee.err.invalidActionType": "动作类型非法",
   "hive.bee.err.missingTemplate": "send/spawn 动作必须填提示词模板",
@@ -681,8 +789,6 @@ const zh = {
   "hive.bee.err.invalidCapturePath": "捕获键路径非法（点分段，如 proposal 或 a.b）",
   "hive.bee.err.invalidPredicate": "文件谓词须为相对路径（禁绝对路径/上跳）",
   "hive.bee.err.invalidOnce": "闩锁开关须为布尔",
-  "hive.bee.err.presetPromptTooLong": "预设提示词超出长度上限 4000",
-  "hive.bee.err.invalidPresetPrompt": "预设提示词须为非空字符串",
   "hive.bee.err.tooManyBeeTypes": "蜂种数量超出上限 16",
   "hive.bee.err.tooManyCapabilities": "能力数量超出上限 16",
   "hive.bee.err.tooManyCaptureVars": "捕获变量过多（上限 8）",
@@ -710,10 +816,9 @@ const zh = {
   "hive.menu.beeDefault": "机械蜂",
   "hive.float.collapse": "收起会话浮窗（Esc）",
   "hive.appearance.groupWall": "巢墙",
-  /* 画布 chrome 配色方案（hive-interaction-polish 追加） */
   "hive.appearance.chromeGroup": "窗口配色",
   "hive.appearance.chrome": "配色方案",
-  "hive.appearance.chromeHint": "画布上浮层卡片/面板（道具栏、蜂群面板、状态卡、概要条、tips、菜单、toast）的底图配色；模态与输入件仍随应用主题",
+  "hive.appearance.chromeHint": "画布上浮层卡片/面板（道具栏、蜂群面板、提案面板、概要条、tips、菜单、toast）的底图配色；模态与输入件仍随应用主题",
   "hive.appearance.chromeDefault": "官方令牌（随应用主题）",
   "hive.appearance.chromeAmber": "琥珀金",
   "hive.appearance.chromeIndigo": "靛夜霓虹",
@@ -754,14 +859,11 @@ const zh = {
   "hive.legend.help": "求助",
   "hive.legend.done": "带蜜归",
   "hive.legend.honey": "蜂蜜（归档）",
-  /* 键盘手势（hive-interaction-polish 8.1）：图例提示项 */
   "hive.legend.keysZC": "按住 Z/C 旋转镜头",
   "hive.legend.keysE": "按 E 直达当前会话",
-  /* 顶部会话概要条（session-brief-bar 5.2）：标题 / 任务 / 报告 三行栈式布局 */
   "hive.brief.aria": "当前会话概要（只读预览：任务与报告）",
   "hive.brief.task": "任务",
   "hive.brief.report": "报告",
-  /* 悬停 tips（bee-hover-tips 6.3）：六字段键名与降级口径 */
   "hive.tips.drone": "无人机",
   "hive.tips.defaultBee": "机械蜂",
   "hive.tips.status": "状态",
@@ -770,7 +872,6 @@ const zh = {
   "hive.tips.tokens": "token 消耗",
   "hive.tips.dps": "平均 DPS",
   "hive.tips.avg": "平均",
-  /* 作战报告（hive-combat-log）：左下角可收起文字面板（D8） */
   "hive.report.title": "作战报告",
   "hive.report.collapse": "收起作战报告",
   "hive.report.expand": "展开作战报告（未读 {n}）",
@@ -787,7 +888,7 @@ const zh = {
   "hive.report.archive": "会话已归档化蜜",
   "hive.report.newNest": "新巢建立：{title}",
   "hive.report.nestMove": "巢已搬移：{title}",
-  "hive.report.wildBee": "野蜂出现：{name}"
+  "hive.report.wildBee": "野蜂出现：{name}",
 };
 
 const en = {
@@ -810,7 +911,7 @@ const en = {
   "hive.collapse": "Fold drones",
   "hive.openSession": "Open session",
   "hive.archive": "Archive",
-  "hive.archivedTag": "Archived · honey is read-only",
+  "hive.archivedTag": "Archived \xB7 honey is read-only",
   "hive.todos": "todos {done}/{total}",
   "hive.runningCount": "{n} running",
   "hive.activeCount": "{n} active",
@@ -842,7 +943,7 @@ const en = {
   "hive.settings.showFps": "FPS counter",
   "hive.settings.showFpsHint": "Frame-rate readout at the canvas top-left (debug)",
   "hive.settings.cameraPitch": "Camera pitch",
-  "hive.settings.cameraPitchHint": "Pitch locks to this value: orbit, pan, zoom and focus never change it. Default 45°, range 15°–70°",
+  "hive.settings.cameraPitchHint": "Pitch locks to this value: orbit, pan, zoom and focus never change it. Default 45\xB0, range 15\xB0–70\xB0",
   "hive.settings.drones": "Drones",
   "hive.drones.activeOnly": "Active only",
   "hive.drones.all": "Show all",
@@ -852,7 +953,6 @@ const en = {
   "hive.settings.followHint": "Gently pan the camera to the matching bee on session switch and page open (on by default)",
   "hive.settings.title": "Settings",
   "hive.settings.close": "Close",
-  /* Shared modal vocabulary (reused by the bee swarm editor) */
   "hive.qc.moveUp": "Move up",
   "hive.qc.moveDown": "Move down",
   "hive.qc.save": "Save",
@@ -861,10 +961,112 @@ const en = {
   "hive.qc.confirmDiscard": "You have unsaved changes. Discard and close?",
   "hive.qc.discard": "Discard",
   "hive.qc.keepEditing": "Keep editing",
-  /* Settings nav rail (context-hotbar-rework 4.x) */
   "hive.settings.navScene": "Scene",
   "hive.settings.navAppearance": "Appearance",
   "hive.settings.navLayout": "Layout",
+  "hive.settings.navVoice": "Voice",
+  "hive.voice.title": "Voice desk",
+  "hive.voice.close": "Collapse voice desk",
+  "hive.voice.entryDisabled": "Voice not configured: set a Zhipu key first",
+  "hive.voice.ptt": "Hold to talk",
+  "hive.voice.pttStart": "Start talking",
+  "hive.voice.pttEnd": "End session",
+  "hive.voice.pttHint": "Click to start listening (mic stays open), click again to end; press-and-hold to cut a segment on release",
+  "hive.voice.segEmpty": "Segment {n}: nothing heard (kept for re-record)",
+  "hive.voice.toolWarning": "⚠️ This answer called tools ({tools}); content may quote outside sources",
+  "hive.voice.answer": "Answer",
+  "hive.voice.wake": "Wake",
+  "hive.voice.end": "End",
+  "hive.voice.stateIdle": "Idle",
+  "hive.voice.stateListening": "Listening",
+  "hive.voice.stateSpeaking": "Speaking",
+  "hive.voice.statePaused": "Paused (blur)",
+  "hive.voice.statusReady": "Voice ready",
+  "hive.voice.statusNoKey": "No Zhipu key",
+  "hive.voice.statusNoModel": "No routable text model",
+  "hive.voice.keySource": "key source: {src}",
+  "hive.voice.segPending": "transcribing…",
+  "hive.voice.segFailed": "failed",
+  "hive.voice.rerecord": "Re-record this segment",
+  "hive.voice.delete": "Delete this segment",
+  "hive.voice.confirmOk": "Confirm",
+  "hive.voice.confirmCancel": "Cancel",
+  "hive.voice.confirmGeneric": "Pending action",
+  "hive.voice.sendTo": "Send to bee",
+  "hive.voice.copyPath": "Copy path",
+  "hive.voice.workspace": "Target workspace",
+  "hive.voice.workspaceAuto": "Follow current workspace",
+  "hive.voice.assetsMissing": "Voice assets missing: run pnpm voice:build to create assets/voice/*.wav",
+  "hive.voice.micFailed": "Microphone unavailable ({msg})",
+  "hive.voice.mic.permission-denied": "permission denied — allow the microphone in the address bar",
+  "hive.voice.mic.no-device": "no input device",
+  "hive.voice.mic.insecure-context": "insecure context (https or 127.0.0.1 required)",
+  "hive.voice.mic.device-busy": "device busy",
+  "hive.voice.mic.aborted": "capture aborted",
+  "hive.voice.mic.unknown": "unknown reason",
+  "hive.voice.noSnapshot": "No previous session",
+  "hive.voice.resumed": "Previous session restored",
+  "hive.voice.overview": "Hive overview",
+  "hive.voice.focused": "Focused {who}",
+  "hive.voice.noBee": "No such bee; candidates: {list}",
+  "hive.voice.noCandidate": "(no addressable bee right now)",
+  "hive.voice.cancelled": "Pending action cancelled",
+  "hive.voice.confirmTimeout": "Confirm timed out; action cancelled",
+  "hive.voice.summoned": "Summoned {n} bee(s)",
+  "hive.voice.summonFailed": "Summon failed: {msg}",
+  "hive.voice.sent": "Sent to {who}",
+  "hive.voice.sendFailed": "Send failed: {msg}",
+  "hive.voice.noWorkspace": "No usable workspace; cannot summon",
+  "hive.voice.pickBee": "Select a bee before delivering",
+  "hive.voice.unavailable": "Voice answer unavailable: {msg}",
+  "hive.voice.answerFailed": "Answer failed: {msg}",
+  "hive.voice.ttsFailed": "Speech synthesis failed: {msg}",
+  "hive.voice.saved": "Document saved: {path}",
+  "hive.voice.truncated": "(truncated at the length cap)",
+  "hive.voice.segmentLimit": "Segment limit reached; answer or delete old segments first",
+  "hive.voice.asrFailed": "Segment {n} transcription failed: {msg}",
+  "hive.voice.ended": "Voice session ended",
+  "hive.voice.deliveryDefaultTitle": "Voice digest",
+  "hive.voice.keyStatus": "Credential",
+  "hive.voice.keyReady": "configured",
+  "hive.voice.keyMissing": "not configured",
+  "hive.voice.keyNoModel": "no text model",
+  "hive.voice.groupHost": "Host credential (write-only, $DSH_HOME/hive-voice.json)",
+  "hive.voice.groupPrefs": "Host-side preferences ($DSH_HOME/hive-voice.json)",
+  "hive.voice.groupSession": "This tab (localStorage, instant)",
+  "hive.voice.apiKey": "Zhipu API key",
+  "hive.voice.keyPlaceholderSet": "configured — paste a new key to replace",
+  "hive.voice.keyPlaceholderEmpty": "paste your Zhipu API key",
+  "hive.voice.saveKey": "Save key",
+  "hive.voice.clearKey": "Clear",
+  "hive.voice.keySaved": "Key saved (never echoed back)",
+  "hive.voice.keyCleared": "Key cleared",
+  "hive.voice.saveHost": "Save to host",
+  "hive.voice.saving": "saving…",
+  "hive.voice.configSaved": "Saved to host config",
+  "hive.voice.configFailed": "Save failed: {msg}",
+  "hive.voice.configStale": "Host has not loaded the voice config route yet: restart dsh web",
+  "hive.voice.textChannel": "Text channel",
+  "hive.voice.channelDsh": "DSH-configured provider (default)",
+  "hive.voice.channelZhipu": "Zhipu direct fallback",
+  "hive.voice.modelDefault": "Catalog default",
+  "hive.voice.maxTokens": "Output cap (tokens)",
+  "hive.voice.targetWorkspace": "Default target workspace",
+  "hive.voice.hotwords": "ASR hotword encoding",
+  "hive.voice.keyHint": "The key stays host-side: env ZHIPU_API_KEY / ZHIPUAI_API_KEY, or $DSH_HOME/hive-voice.json",
+  "hive.voice.probe": "Re-probe",
+  "hive.voice.textModel": "Text model (DSH-configured provider)",
+  "hive.voice.textModelDefault": "Catalog default",
+  "hive.voice.voice": "Voice",
+  "hive.voice.speed": "Speed",
+  "hive.voice.silence": "Silence trigger",
+  "hive.voice.confirmTimeoutLabel": "Confirm timeout",
+  "hive.voice.seconds": "s",
+  "hive.voice.persona": "Persona template",
+  "hive.voice.personaDefault": "Host default",
+  "hive.voice.backchannel": "Backchannel in pauses",
+  "hive.voice.bargeIn": "Barge-in RMS",
+  "hive.voice.watermarkNote": "GLM-TTS audio carries an explicit + implicit watermark by default (watermark_enabled defaults to true); asset rebuild script is in the README.",
   "hive.settings.layoutPanelGroup": "Overlay panel (worker grid, right)",
   "hive.settings.layoutPanelM": "Columns m",
   "hive.settings.layoutPanelN": "Rows n",
@@ -876,7 +1078,6 @@ const en = {
   "hive.settings.reportRowsHint": "Panel is anchored bottom-left; the list height follows the row count and scrolls beyond it",
   "hive.settings.layoutHint": "Applies instantly; stored per tab only",
   "hive.settings.resetAll": "Reset to defaults",
-  /* Command editor (context-hotbar-rework 5.x) */
   "hive.hb.title": "Command editor",
   "hive.hb.close": "Close the command editor",
   "hive.hb.tabHive": "Hive bar",
@@ -899,6 +1100,14 @@ const en = {
   "hive.hb.autoSendHint": "Checked = a click sends directly; unchecked = fills the composer for review",
   "hive.hb.pureSummonHint": "Empty prompt = summon only (no message sent)",
   "hive.hb.summonOffHint": "Summon off: prompt not accepted; the card renders disabled in the hotbar",
+  /* 提案栏节（add-proposal-panel 5.6/5.7） */
+  "hive.hb.tabProposal": "提案栏",
+  "hive.hb.setStatus": "执行成功后置状态",
+  "hive.hb.proposalSummonHint": "勾选后点击卡片在提案所属工作区召唤新蜂；不勾选则发给当前会话蜂",
+  "hive.hb.proposalSlotHint": "提示词模板中的 {change} 会在执行时替换为选中的提案名；写 {{change}} 得到字面 {change}（不被替换）",
+  "hive.hb.proposalAutoSendHint": "勾选后点击卡片直接发送；不勾选则填入输入框供审查回车（该路径不置状态）",
+  "hive.hb.proposalPromptHint": "模板：{change} = 选中提案名；{{ 与 }} 会还原为单个花括号",
+  "hive.hb.proposalPromptPlaceholder": "如：继续推进 {change}，先读 proposal.md",
   "hive.hb.overflow": "{n} slots exceed the grid — saved, but the overflow is not rendered in the hotbar",
   "hive.hb.dirty": "Unsaved changes",
   "hive.hb.saveStale": "Save was not persisted by the host (host half may be outdated) — restart dsh and retry",
@@ -907,32 +1116,20 @@ const en = {
   "hive.hb.err.missingPrompt": "Bee-bar prompt cannot be blank",
   "hive.hb.err.promptBlocked": "Prompt is not accepted while summon/create-bee is off",
   "hive.hb.err.tooManySlots": "Too many slots (limit 32)",
-  /* Status cards (bee-status-cards): completion status bar + status card action */
-  "hive.status.aria": "Completion status bar",
-  "hive.status.cardTitle": "{name}: {count} bee(s) carrying honey now",
-  "hive.status.default": "Mechanical bee",
-  "hive.status.send": "Batch send",
-  "hive.status.sendEmpty": "No completed bees",
-  "hive.status.confirmTitle": "Confirm batch send",
-  "hive.status.confirmPrompt": "Preset prompt",
-  "hive.status.confirmTargets": "Target bees",
-  "hive.status.confirmHint": "The preset prompt will be sent to every completed bee on this card, one by one",
-  "hive.status.confirm": "Send",
-  "hive.status.cancel": "Cancel",
-  "hive.status.toastSent": "Sent {n}, {m} failed",
-  "hive.status.toastNone": "No completed bees to send to",
-  "hive.hb.tabStatus": "Status cards",
-  "hive.hb.status.defaultRow": "The mechanical bee cannot have a status card action",
-  "hive.hb.status.promptPlaceholder": "Preset prompt (sent to every completed bee of this type)",
-  "hive.hb.status.autoSendHint": "Checked = a click batch-sends directly; unchecked = confirm first",
-  "hive.hb.status.clear": "Clear config",
-  "hive.hb.status.cleared": "Config cleared",
-  "hive.hb.status.empty": "Select a bee type to configure its status card action.",
-  "hive.hb.status.err.missingType": "Missing bee type id",
-  "hive.hb.status.err.invalidPrompt": "Prompt must be a string",
-  "hive.settings.batchSendConfirm": "Batch-send confirmation",
-  "hive.settings.batchSendConfirmHint": "When off, cards without auto-send send directly on click (no confirmation)",
-  /* Contextual hotbar (context-hotbar-rework 6.x) */
+  "hive.hb.err.invalidModel": "Model shape is invalid (provider + model required)",
+  "hive.hb.model": "LLM model",
+  "hive.hb.effort": "Reasoning effort",
+  "hive.hb.effortDefault": "Model default effort",
+  "hive.hb.import": "Import quick actions",
+  "hive.hb.importBusy": "Importing…",
+  "hive.hb.importHint": "Import quick buttons from dsh-v-skill-links into the bee-bar draft (duplicates skipped; takes effect after saving)",
+  "hive.hb.importLoading": "Checking the import source…",
+  "hive.hb.importNotInstalled": "Import source unavailable: dsh-v-skill-links is not installed or not enabled",
+  "hive.hb.importServiceAbsent": "Import source unavailable: the host has no settings service",
+  "hive.hb.importStale": "Import failed: the host was not restarted or is too old (import endpoint missing) — restart dsh and retry",
+  "hive.hb.importRetry": "The last import-source check failed — click to retry",
+  "hive.hb.importFailed": "Import failed: {err}",
+  "hive.hb.importSummary": "Imported {n}, skipped {m} (duplicate names), {k} not imported (capacity)",
   "hive.bar.aria.hive": "Hive hotbar",
   "hive.bar.aria.bee": "Bee hotbar",
   "hive.bar.aria.floor": "Floor hotbar",
@@ -947,7 +1144,10 @@ const en = {
   "hive.bar.toastFloorPickFailed": "Directory picker unavailable",
   "hive.bar.toastFloorSummonFailed": "Studio created, but summon failed (empty studio kept)",
   "hive.bar.toastSummonAppendFailed": "Bee summoned, but the prompt could not be filled into the composer (session opened; paste it manually)",
-  /* Built-in default action cards (hotbar-default-actions 2.1, design D5; user-tuned set) */
+  "hive.bar.toastModelDegraded": "Model switch failed; sent with the session's current model",
+  /* 提案栏门控与 aria（add-proposal-panel 5.5/5.7；aria 经 "hive.bar.aria."+kind 拼键） */
+  "hive.bar.aria.proposal": "提案栏道具栏",
+  "hive.bar.proposalNoBee": "当前会话不是可直发的工蜂——请先选中一只蜂，或在提案卡上勾选「召唤新蜂」",
   "hive.bar.defaults.beeContinue": "Continue",
   "hive.bar.defaults.beeContinuePrompt": "Continue",
   "hive.bar.defaults.beeArchive": "Archive session",
@@ -958,10 +1158,25 @@ const en = {
   "hive.bar.defaults.badge": "Built-in",
   "hive.bar.defaults.hint": "Defaults collapse once this column has a custom slot",
   "hive.bar.defaults.hintResident": "Bee-column built-ins always show; custom slots don't collapse them",
-  /* Worker panel (context-hotbar-rework 7.x) */
   "hive.panel.empty": "Empty studio — no workers yet",
   "hive.panel.drones": "Drones: {a} active / {n} total",
   "hive.panel.selected": "{n} selected",
+  /* 提案面板与提案指令栏（add-proposal-panel 5.7） */
+  "hive.proposal.aria": "提案面板",
+  "hive.proposal.title": "提案",
+  "hive.proposal.refresh": "刷新提案清单",
+  "hive.proposal.refreshing": "正在刷新…",
+  "hive.proposal.empty": "暂无未归档提案。",
+  "hive.proposal.error": "提案清单拉取失败——点击刷新重试。",
+  "hive.proposal.status.none": "不设置",
+  "hive.proposal.status.reviewed": "已审阅",
+  "hive.proposal.status.executed": "已执行",
+  "hive.proposal.status.paused": "已暂停",
+  "hive.proposal.toast.statusSet": "已更新提案状态",
+  "hive.proposal.toast.statusFailed": "状态写入失败：{err}",
+  "hive.proposal.toast.missingVars": "模板占位符未插值：{names}（未发送）",
+  "hive.proposal.toast.badTemplate": "模板语法非法（花括号不成对，未发送）",
+  "hive.proposal.toast.sendFailed": "提案指令发送失败",
   "hive.swarm.title": "Bee swarm editor",
   "hive.swarm.close": "Close the bee swarm editor",
   "hive.swarm.tabTypes": "Bee types",
@@ -970,12 +1185,9 @@ const en = {
   "hive.swarm.empty": "No custom bee types yet — add the first one besides the mechanical bee.",
   "hive.swarm.namePlaceholder": "Bee type name (e.g. Designer)",
   "hive.swarm.descPlaceholder": "Description (optional)",
-  "hive.swarm.presetPromptPlaceholder": "Preset prompt (optional; summon first message = payload + this field)",
-  "hive.swarm.presetPromptHint": "B-side behavior: guidance appended when this bee type is summoned (task data goes in the caller's payload)",
   "hive.swarm.queuePolicy": "Queue policy",
   "hive.swarm.queueFree": "Free (never queues)",
   "hive.swarm.queueSerialized": "Serialized (auto actions queue per studio)",
-  "hive.swarm.model": "Chat model (optional)",
   "hive.swarm.beeModel": "Bee model",
   "hive.beeModel.worker": "Default worker",
   "hive.beeModel.purple_worker": "Purple worker",
@@ -1013,7 +1225,6 @@ const en = {
   "hive.bee.err.missingName": "Bee type name cannot be empty",
   "hive.bee.err.missingId": "Missing bee type id",
   "hive.bee.err.invalidId": "Bee type id shape is invalid (letters/digits/-/_)",
-  "hive.bee.err.invalidModel": "Model shape is invalid (provider + model required)",
   "hive.bee.err.invalidQueuePolicy": "Invalid queue policy",
   "hive.bee.err.invalidActionType": "Invalid action type",
   "hive.bee.err.missingTemplate": "send/spawn actions require a prompt template",
@@ -1024,8 +1235,6 @@ const en = {
   "hive.bee.err.invalidCapturePath": "Invalid capture key path (dot segments, e.g. proposal or a.b)",
   "hive.bee.err.invalidPredicate": "File predicate must be a relative path (no absolute/..)",
   "hive.bee.err.invalidOnce": "Latch switch must be a boolean",
-  "hive.bee.err.presetPromptTooLong": "Preset prompt exceeds the 4000 character limit",
-  "hive.bee.err.invalidPresetPrompt": "Preset prompt must be a non-empty string",
   "hive.bee.err.tooManyBeeTypes": "Too many bee types (limit 16)",
   "hive.bee.err.tooManyCapabilities": "Too many capabilities (limit 16)",
   "hive.bee.err.tooManyCaptureVars": "Too many capture vars (limit 8)",
@@ -1053,10 +1262,9 @@ const en = {
   "hive.menu.beeDefault": "Mechanical bee",
   "hive.float.collapse": "Collapse session float (Esc)",
   "hive.appearance.groupWall": "Walls",
-  /* Canvas chrome color schemes (hive-interaction-polish) */
   "hive.appearance.chromeGroup": "Chrome palette",
   "hive.appearance.chrome": "Color scheme",
-  "hive.appearance.chromeHint": "Backgrounds of cards & panels over the 3D canvas (hotbar, swarm panel, status cards, brief bar, tips, menu, toast); modals follow the app theme",
+  "hive.appearance.chromeHint": "Backgrounds of cards & panels over the 3D canvas (hotbar, swarm panel, proposal panel, brief bar, tips, menu, toast); modals follow the app theme",
   "hive.appearance.chromeDefault": "Official tokens (follow app theme)",
   "hive.appearance.chromeAmber": "Honey amber",
   "hive.appearance.chromeIndigo": "Indigo neon",
@@ -1097,14 +1305,11 @@ const en = {
   "hive.legend.help": "Needs you",
   "hive.legend.done": "Done",
   "hive.legend.honey": "Honey (archived)",
-  /* Keyboard gestures (hive-interaction-polish 8.1): legend hint items */
   "hive.legend.keysZC": "Hold Z/C to orbit the camera",
   "hive.legend.keysE": "Press E to open the current session",
-  /* Session brief bar (session-brief-bar 5.2): title / task / report stacked rows */
   "hive.brief.aria": "Current session brief (read-only preview: task & report)",
   "hive.brief.task": "Task",
   "hive.brief.report": "Report",
-  /* Hover tips (bee-hover-tips 6.3): field labels and degraded wording */
   "hive.tips.drone": "Drone",
   "hive.tips.defaultBee": "Mechanical bee",
   "hive.tips.status": "Status",
@@ -1113,7 +1318,6 @@ const en = {
   "hive.tips.tokens": "Tokens",
   "hive.tips.dps": "Avg DPS",
   "hive.tips.avg": "avg",
-  /* Combat report (hive-combat-log): collapsible text panel at the canvas bottom-left (D8) */
   "hive.report.title": "Combat report",
   "hive.report.collapse": "Collapse the combat report",
   "hive.report.expand": "Expand the combat report ({n} unread)",
@@ -1130,7 +1334,7 @@ const en = {
   "hive.report.archive": "Session archived into honey",
   "hive.report.newNest": "New studio: {title}",
   "hive.report.nestMove": "Studio moved: {title}",
-  "hive.report.wildBee": "Wild bee appeared: {name}"
+  "hive.report.wildBee": "Wild bee appeared: {name}",
 };
 
 /* ------------------------------------------------------------------ *
@@ -1163,16 +1367,22 @@ function createController(ctx, notify) {
 
   /* 镜像同步（4.1）：fetchState / SSE 广播 / 写回成功三路都会经过这里。 */
   function syncMirrors(doc) {
-    /* 指令编辑域镜像（context-hotbar-rework 6.1 + bee-status-cards D9）：
-       hotbars + statusCards 两字段同帧入 store 即归一化（悬空键丢弃）。 */
+    /* 指令编辑域镜像（context-hotbar-rework 6.1）：hotbars 四栏单字段入 store 即归一化。
+       提案状态位（doc.proposalStates）随同一份文档镜像流动——由 `layout?.proposalStates`
+       直读（与 beeEngineState 同款：文档镜像即权威，不另设 store）。 */
     hotbarsStore.set(doc);
     /* 蜂种镜像（custom-bee-types 4.1）：同源三路同步 + 场景 overlay 下发 */
     beeTypesStore.set(doc?.beeTypes ?? [], doc?.beeAssignments ?? {});
     pushBeeOverlay();
   }
 
-  /* 引擎状态帧镜像（custom-bee-types 4.1/5.1）：SSE bee-engine 帧 → store → 场景 overlay。 */
+  /* 引擎状态帧镜像（custom-bee-types 4.1/5.1）：SSE bee-engine 帧 → store → 场景 overlay。
+     **帧类型守卫（add-proposal-panel 5.2/D9 硬要求）**：`subscribeLayout` 把所有非 layout 帧
+     都交给引擎通道（api.mjs 的 else 分支），而 `beeEngineStore.setFrame` 不校验类型——
+     `proposals-changed` 轻帧没有 `lane`/`sessions`，不守卫就会按 `{}` 落库并 emit，
+     表现为**每条目录事件都清空一次蜂卡等待/通知镜像**。 */
   function syncBeeEngine(frame) {
+    if (frame?.type !== "bee-engine") return;
     beeEngineStore.setFrame(frame);
     pushBeeOverlay();
   }
@@ -1197,6 +1407,27 @@ function createController(ctx, notify) {
       workerBeeIdOf(scene?.world ?? null, current, scene?.getSelection?.() ?? null, ctx.sessions?.list?.getSnapshot?.())
     );
     selectionStore.set(scene?.getSelection?.() ?? null);
+  }
+
+  /**
+   * 提案清单拉取（add-proposal-panel 5.2）：宿主每请求即时收集，故「重拉即最新」。
+   * 单一入口——面板打开、头部刷新按钮、`proposals-changed` 轻帧、空态刷新四处共用。
+   * 失败保留旧清单并记录 error（面板照常可用，刷新按钮即重试入口）。
+   */
+  let proposalsFetching = false;
+  async function refreshProposals() {
+    if (disposed || proposalsFetching) return;
+    proposalsFetching = true;
+    proposalsStore.setLoading(true);
+    try {
+      const result = await fetchProposals();
+      if (disposed) return;
+      if (result.ok === true) proposalsStore.set({ groups: result.groups });
+      else proposalsStore.set({ error: result.error });
+    } finally {
+      proposalsFetching = false;
+      if (!disposed) proposalsStore.setLoading(false);
+    }
   }
 
   async function refreshLayout() {
@@ -1251,22 +1482,18 @@ function createController(ctx, notify) {
   }
 
   /**
-   * 指令编辑保存（context-hotbar-rework 5.3 + bee-status-cards D4）：一次性
-   * putState(revision, { hotbars, statusCards }) 同帧写两字段——409 冲突重放一次，
-   * host-stale 检测同时比对两字段（宿主半区旧版本 → zod strip 未知键 → 200 但
-   * doc 缺字段 → 显式失败）。动作名保留、签名扩容，避免新增平行通道造成两份
-   * revision 竞争（D4 定稿）。
+   * 指令编辑保存（context-hotbar-rework 5.3；add-proposal-panel 4.2 单参化）：
+   * 一次性 putState(revision, { hotbars }) 写四栏——409 冲突重放一次，
+   * host-stale 检测（宿主半区旧版本 → zod strip 未知键 → 200 但 doc 缺字段 →
+   * 显式失败）。`statusCards` 第二字段已随 bee-status-cards 拆除；提案状态位走
+   * 专用路由 `POST /proposals/status`，不经本通道（避免两份 revision 竞争）。
    * @returns {Promise<{ok: true, doc: object}|{ok: false, error: string}>}
    */
-  async function saveHotbars(nextHotbars, nextStatusCards) {
+  async function saveHotbars(nextHotbars) {
     if (!layout) return { ok: false, error: "layout not ready" };
     const normalized = normalizeHotbars(nextHotbars);
-    const normalizedStatus = normalizeStatusCards(nextStatusCards, layout.beeTypes ?? []);
     const body = { hotbars: normalized };
-    if (nextStatusCards !== undefined) body.statusCards = normalizedStatus;
-    const stale = (doc) =>
-      JSON.stringify(normalizeHotbars(doc?.hotbars ?? {})) !== JSON.stringify(normalized) ||
-      JSON.stringify(normalizeStatusCards(doc?.statusCards ?? {}, doc?.beeTypes ?? [])) !== JSON.stringify(normalizedStatus);
+    const stale = (doc) => JSON.stringify(normalizeHotbars(doc?.hotbars ?? {})) !== JSON.stringify(normalized);
     let result = await putState(layout.revision, body);
     if (result.conflict) {
       layout = result.doc ?? layout;
@@ -1520,9 +1747,85 @@ function createController(ctx, notify) {
       }
       return snapshot?.current ?? null;
     },
-    /** 会话镜像快照（bee-status-cards：completionPool 排除 subagent 的口径源）。 */
+    /** 会话镜像快照（工蜂判定与蜂卡等待/通知的口径源）。 */
     sessionsSnapshot() {
       return ctx.sessions?.list?.getSnapshot?.() ?? null;
+    },
+    /* ── 提案面板动作面（add-proposal-panel 5.1/5.2/6.1） ── */
+
+    /** 提案清单重拉（面板打开、刷新按钮、`proposals-changed` 轻帧共用入口）。 */
+    async refreshProposals() {
+      return refreshProposals();
+    },
+
+    /** 当前布局文档的提案状态位（`proposalStates` 的读取面；文档镜像即权威）。 */
+    proposalStates() {
+      return layout?.proposalStates ?? {};
+    },
+
+    /** 提案状态位置位（专用路由；宿主持久化 + SSE 广播 → 跨页签自然收敛）。 */
+    async setProposalStatus(patch) {
+      const result = await setProposalStatus(patch);
+      if (result.ok === true) await refreshProposals(); // 状态随清单回读（同页签即时反馈）
+      return result;
+    },
+    /* ── 语音工作台动作面（add-hive-voice-desk 3.6/4.3；全部复用既有能力，零新语义） ── */
+
+    /** 语音投递（已有蜂）：复用 /send 直发通道（与蜂栏直发同一路由）。 */
+    async sendToBee(sessionId, prompt) {
+      if (!sessionId) return { ok: false, error: "no-target" };
+      return sendCommand(sessionId, prompt);
+    },
+
+    /** 在册工作区清单（工作台目标工作区切换 + 召唤落巢）。 */
+    workspaces() {
+      try {
+        return (ctx.workspaces?.list?.getSnapshot?.()?.items ?? []).map((w) => ({
+          id: w.workspaceId ?? w.id,
+          title: w.title ?? "",
+          path: w.path ?? ""
+        }));
+      } catch {
+        return [];
+      }
+    },
+
+    /** 当前会话所属工作区（落盘「目标工作区默认蜂巢页当前选中工作区」的判据源）。 */
+    currentWorkspaceId() {
+      try {
+        const current = ctx.sessions?.list?.getSnapshot?.()?.current ?? null;
+        if (!current) return null;
+        const studio = (scene?.world?.studios ?? []).find((s) => (s.bees ?? []).some((b) => b.sessionId === current));
+        return studio?.workspaceId ?? null;
+      } catch {
+        return null;
+      }
+    },
+
+    /** 语音指称表（add-hive-voice-desk 3.4）：世界内蜂 + 蜂种名 + 所属巢 + 序号/选中态。
+        会话标题只存在于浏览器投影（bee-model displayTitle），故由客户端生成；
+        序号即解析用指称编号（「第 3 只」），selected 供界面高亮当前会话蜂。 */
+    voiceReferents() {
+      const world = scene?.world;
+      const assignments = beeTypesStore.getAssignments?.() ?? {};
+      const types = beeTypesStore.beeTypes ?? [];
+      const current = ctx.sessions?.list?.getSnapshot?.()?.current ?? null;
+      const list = [];
+      const collect = (bee, workspaceId) => {
+        if (!bee?.sessionId) return;
+        const type = types.find((entry) => entry.id === assignments[bee.sessionId]) ?? null;
+        list.push({
+          sessionId: bee.sessionId,
+          title: bee.displayTitle ?? bee.sessionId,
+          beeTypeName: type?.name ?? "",
+          workspaceId: workspaceId ?? null
+        });
+      };
+      for (const studio of world?.studios ?? []) {
+        for (const bee of studio.bees ?? []) collect(bee, studio.workspaceId);
+      }
+      for (const bee of world?.wildBees ?? []) collect(bee, null);
+      return list.map((entry, index) => ({ ...entry, index: index + 1, selected: entry.sessionId === current }));
     },
     openFloat() {
       storeBridge?.openFloat?.();
@@ -1698,7 +2001,16 @@ function createController(ctx, notify) {
         pushBeeOverlay();
         scheduleRebuild();
       },
-      (frame) => syncBeeEngine(frame)
+      (frame) => {
+        /* 帧类型分派（add-proposal-panel 5.2/D9）：`proposals-changed` 是轻帧
+           （不带清单载荷）——只触发清单重拉，SHALL NOT 触碰引擎镜像（syncBeeEngine
+           内另有类型守卫双保险）。 */
+        if (frame?.type === "proposals-changed") {
+          void refreshProposals();
+          return;
+        }
+        syncBeeEngine(frame);
+      }
     )
   );
   const onFocus = () => refreshLayout();
@@ -1927,16 +2239,134 @@ function HivePage(props) {
     (listener) => selectedBeeStore.subscribe(listener),
     () => selectedBeeStore.getSnapshot()
   );
-  /* 道具栏三栏镜像（context-hotbar-rework 6.1）：SSE 广播 + fetchState 驱动 */
+  /* 道具栏四栏镜像（context-hotbar-rework 6.1）：SSE 广播 + fetchState 驱动 */
   const hotbars = useSyncExternalStore(
     (listener) => hotbarsStore.subscribe(listener),
     () => hotbarsStore.getSnapshot()
   );
-  /* 状态卡片镜像（bee-status-cards D9）：与 hotbars 同源三路同步（同一个订阅源） */
-  const statusCards = useSyncExternalStore(
-    (listener) => hotbarsStore.subscribe(listener),
-    () => hotbarsStore.getStatusCards()
-  );
+  /* 提案选中态（add-proposal-panel 5.4/D9）：**页面级第四态**——不进布局文档、
+     不进 selectionStore、不调 scene.select（占用场景选中槽会令「当前会话蜂」判定
+     恒为空，直发通道随之失效）；纯页内瞬态，不跨页持久。 */
+  const [selectedProposal, setSelectedProposal] = useState(null);
+  /* 语音入口探测结果（add-hive-voice-desk 3.4）：{ state, key, prefs } 结构态；null = 未探。
+     入口按 state 置灰/给 title，设置模态透传呈现探测结论。 */
+  const [voiceStatusState, setVoiceStatusState] = useState(null);
+  /* 语音状态重探序号（入口点击与设置模态「刷新」共用同一触发器）。 */
+  const [voiceStatusSeq, setVoiceStatusSeq] = useState(0);
+  /* 语音工作台面板开合（页级瞬态，不持久化）。 */
+  const [voiceOpen, setVoiceOpen] = useState(false);
+  /* 目标工作区（宿主侧默认值落点；空 = 宿主默认）。 */
+  const [voiceWs, setVoiceWs] = useState(null);
+  /* 在册工作区清单镜像（工作台目标工作区下拉数据源）。 */
+  const [voiceWorkspaces, setVoiceWorkspaces] = useState([]);
+  /* 编排核心依赖代理（保持「每帧最新」而无需重建核心——重建会丢会话状态）。 */
+  const voiceDepsRef = useRef({});
+  const deskRef = useRef(null);
+  if (!deskRef.current) {
+    deskRef.current = createVoiceDesk({
+      t: (key) => voiceDepsRef.current.t?.(key) ?? key,
+      notify: (text, kind) => voiceDepsRef.current.notify?.(text, kind),
+      actions: {
+        focusBee: (id) => voiceDepsRef.current.actions?.selectBee?.(id),
+        hiveOverview: () => voiceDepsRef.current.actions?.hiveOverview?.(),
+        summon: (payload) => voiceDepsRef.current.actions?.summon?.(payload),
+        send: (id, prompt) => voiceDepsRef.current.actions?.sendToBee?.(id, prompt)
+      },
+      referents: () => voiceDepsRef.current.referents?.() ?? [],
+      beeTypes: () => voiceDepsRef.current.beeTypes?.() ?? [],
+      workspaceId: () => voiceDepsRef.current.workspaceId?.() ?? null,
+      selectedSessionId: () => voiceDepsRef.current.selectedSessionId?.() ?? null,
+      settings: () => voiceDepsRef.current.settings?.() ?? {},
+      hasFocus: () => (typeof document === "undefined" ? true : document.hasFocus()),
+      asr: (wav, options) => voiceAsr(wav, options),
+      answer: (payload) => voiceAnswer(payload)
+    });
+  }
+  const desk = deskRef.current;
+  const voiceSnap = useVoiceDeskSnapshot(desk);
+  voiceDepsRef.current = {
+    t,
+    notify,
+    actions: ctl().actions,
+    referents: () => ctl().actions.voiceReferents?.() ?? [],
+    beeTypes: () => (beeTypes ?? []).map((entry) => ({ id: entry.id, name: entry.name })),
+    workspaceId: () => voiceWs,
+    selectedSessionId: () => selectedBee,
+    settings: () => settings.voice ?? {}
+  };
+
+  useEffect(() => {
+    desk.start();
+    return () => desk.dispose();
+  }, [desk]);
+  useEffect(() => {
+    desk.applySettings(settings.voice ?? {});
+  }, [desk, settings.voice]);
+  useEffect(() => {
+    desk.setWorkspace(voiceWs);
+  }, [desk, voiceWs]);
+  /* 入口探测（3.4）：打开蜂巢页 + 每次重探序号变化 → /voice/status 一次；
+     未配置 key 时入口置灰并给引导文案（spec「入口置灰并显示配置指引」）。 */
+  useEffect(() => {
+    let alive = true;
+    voiceStatus().then((result) => {
+      if (!alive) return;
+      setVoiceStatusState(result);
+      desk.setStatus(result);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [desk, voiceStatusSeq]);
+  /* 热词索引（3.4）：目标工作区或面板打开变化 → /voice/index 拉一次，
+     并入浏览器侧蜂显示名（会话标题只存在于浏览器投影）。 */
+  useEffect(() => {
+    let alive = true;
+    voiceIndex(voiceWs ?? undefined).then((result) => {
+      if (!alive || !result.ok) return;
+      const titles = (ctl().actions.voiceReferents?.() ?? []).map((entry) => entry.title).filter(Boolean);
+      desk.setHotwords([...(result.hotwords ?? []), ...titles]);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [ctl, desk, voiceWs, voiceOpen]);
+  /* 页面失焦/回焦（spec：失焦静音并暂停录音与静默计时，回焦恢复）。 */
+  useEffect(() => {
+    const onBlur = () => desk.focusLost();
+    const onFocus = () => desk.focusGained();
+    window.addEventListener("blur", onBlur);
+    window.addEventListener("focus", onFocus);
+    return () => {
+      window.removeEventListener("blur", onBlur);
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [desk]);
+  /* 面板首开（3.4）：预热应答音资产 + 载入工作区清单并落默认目标工作区
+     （宿主侧默认 > 当前会话所属 > 首个在册；用户切换后不再覆盖）。 */
+  useEffect(() => {
+    if (!voiceOpen) return;
+    desk.preloadCues();
+    const list = ctl().actions.workspaces?.() ?? [];
+    setVoiceWorkspaces(list);
+    setVoiceWs((prev) => prev ?? ctl().actions.currentWorkspaceId?.() ?? list[0]?.id ?? null);
+  }, [ctl, desk, voiceOpen]);
+  /* 设置模态打开（3.x）：刷新工作区清单（宿主侧配置节的目标工作区下拉）并重探状态。 */
+  useEffect(() => {
+    if (!settingsOpen) return;
+    setVoiceWorkspaces(ctl().actions.workspaces?.() ?? []);
+    setVoiceStatusSeq((n) => n + 1);
+  }, [ctl, settingsOpen]);
+  /* 宿主侧语音配置写入（只写不读）：成功即刷新探测结论。 */
+  const saveVoiceConfig = async (patchBody) => {
+    const result = await voiceConfig(patchBody);
+    if (result.ok) {
+      setVoiceStatusState(result);
+      desk.setStatus(result);
+      setVoiceStatusSeq((n) => n + 1);
+    }
+    return result;
+  };
   /* 场景选中槽镜像（6.1）：三态门控信号源 */
   const selection = useSyncExternalStore(
     (listener) => selectionStore.subscribe(listener),
@@ -2113,9 +2543,9 @@ function HivePage(props) {
     return () => window.removeEventListener("keydown", onKey);
   }, [fullscreen, floatOpen, setFullscreen, closeFloat, ctl]);
 
-  /* 模型目录加载（4.3，S4）：蜂群浮窗打开时经任一活会话拉取一次。 */
+  /* 模型目录加载（4.3，S4）：指令编辑模态打开时经任一活会话拉取一次。 */
   useEffect(() => {
-    if (!swarmOpen) return undefined;
+    if (!hotbarsOpen) return undefined;
     setModelState("loading");
     let alive = true;
     const sessionId = ctl().actions.anyLiveSessionId?.();
@@ -2139,7 +2569,7 @@ function HivePage(props) {
     return () => {
       alive = false;
     };
-  }, [swarmOpen, ctl]);
+  }, [hotbarsOpen, ctl]);
 
   /* 打开时聚焦页面帧（insight 焦点管理同款）。 */
   useEffect(() => {
@@ -2285,9 +2715,29 @@ function HivePage(props) {
     };
   }, [ctl, floatOpen]);
 
-  /* ── 情境道具栏（context-hotbar-rework 6.x）：三态门控 + 双通道/召唤/建巢 ── */
+  /* ── 情境道具栏（context-hotbar-rework 6.x / add-proposal-panel 5.4）：四态门控 ── */
   const layout = sanitizeLayout(settings.layout); // 写读两侧净房，保证 m/n 恒在界内
-  const hotbarKind = resolveHotbarKind({ selection, selectedBee, floatOpen });
+  const hotbarKind = resolveHotbarKind({ selection, selectedBee, floatOpen, selectedProposal });
+
+  /* 提案选中/取消（5.4）：点卡选中、再点同一卡取消；**清场景选中**是「选提案即离开
+     场景情境」的最短路径（不调 scene.select——那会占用场景选中槽）。 */
+  const pickProposal = (pick) => {
+    if (!pick?.workspaceId || !pick?.name) return;
+    const same = selectedProposal?.workspaceId === pick.workspaceId && selectedProposal?.name === pick.name;
+    if (same) {
+      setSelectedProposal(null);
+      return;
+    }
+    ctl().actions.clearSelection?.();
+    setSelectedProposal({ workspaceId: pick.workspaceId, name: pick.name });
+  };
+
+  /* 场景 → 提案方向的互斥（5.4）：场景选中出现即清提案选中（用一条副作用实现，
+     SHALL NOT 改 3D 场景代码）。提案方向经 pickProposal → clearSelection 反向收敛。 */
+  useEffect(() => {
+    if (selection && selectedProposal) setSelectedProposal(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selection]);
 
   /* 蜂栏双通道（6.3，继承旧快捷指令语义）：未勾 = 桥追加草稿 + 唤起浮窗（非
      plain 禁用）；勾选 = POST /send followup 直发（静默：无 toast 无镜头）；
@@ -2411,6 +2861,99 @@ function HivePage(props) {
     }
   };
 
+  /* 提案指令卡（add-proposal-panel 6.1/D6/D7）：`{change}` 插值 fail-safe →
+     两条宿主通道分流 → 「宿主已接受」且 `setStatus` 非空才置位。
+     在途锁（proposalBusy）：双击 SHALL NOT 产生两个新蜂。 */
+  const [proposalBusy, setProposalBusy] = useState(false);
+  const fillTemplate = (key, vars) =>
+    String(t(key)).replace(/\{(\w+)\}/g, (whole, name) => (name in vars ? String(vars[name]) : whole));
+
+  /** 执行成功后置位（仅「宿主已接受」通道调用；填稿通道 SHALL NOT 调用）。 */
+  const applyProposalStatus = async (status, pick) => {
+    if (!status || !pick) return;
+    const result = await ctl().actions.setProposalStatus?.({
+      workspaceId: pick.workspaceId,
+      name: pick.name,
+      status
+    });
+    if (result?.ok) notify("proposalStatusSet", "ok");
+    else notify(fillTemplate("hive.proposal.toast.statusFailed", { err: String(result?.error ?? "") }), "err");
+  };
+
+  const handleProposalSlot = async (slot) => {
+    if (proposalBusy) return;
+    const pick = selectedProposal;
+    if (!pick) return;
+    const template = String(slot.prompt ?? "");
+    /* fail-safe 插值：区分「未捕获占位符」与「模板语法非法」两种拒发原因（D6）。 */
+    const interpolated = interpolateTemplate(template, { change: pick.name });
+    if (!interpolated.ok) {
+      notify(
+        interpolated.badTemplate
+          ? t("hive.proposal.toast.badTemplate")
+          : fillTemplate("hive.proposal.toast.missingVars", { names: (interpolated.missing ?? []).join(", ") }),
+        "err"
+      );
+      return;
+    }
+    const prompt = interpolated.text;
+    const status = typeof slot.setStatus === "string" ? slot.setStatus : "";
+    setProposalBusy(true);
+    try {
+      if (slot.summon === true) {
+        /* 新召唤通道：cwd = 提案所属工作区（用户决策：新蜂落该巢）。 */
+        const result = await ctl().actions.summon({
+          workspaceId: pick.workspaceId,
+          beeTypeId: slot.beeTypeId || undefined,
+          prompt,
+          model: slot.model,
+          autoSend: slot.autoSend === true
+        });
+        if (!result?.ok) {
+          notify(result?.field === "beeTypeId" ? "summonMissingBee" : "summonFailed", "err");
+          return;
+        }
+        if (!prompt.trim()) {
+          notify("summoned", "ok");
+          await applyProposalStatus(status, pick);
+          return;
+        }
+        if (slot.autoSend !== true) {
+          /* 审查路径：种子/桥填稿 + 关页直达；仍以**召唤请求被接受**为置位判据
+             （会话已建，执行事实成立）。 */
+          ctl().actions.refreshSessions?.();
+          const appended = (await seedSummonDraft(result.sessionId, prompt))
+            || (await appendViaBridge(result.sessionId, prompt, 800));
+          if (appended) close();
+          else notify("summonAppendFailed", "err");
+          await applyProposalStatus(status, pick);
+          return;
+        }
+        await applyProposalStatus(status, pick);
+        return;
+      }
+      /* 直发通道（继承蜂栏双通道语义）。 */
+      if (slot.autoSend === true) {
+        if (!selectedBee) return; // 门控已挡（卡片禁用），此处双保险
+        const result = await sendCommand(selectedBee, prompt, slot.model);
+        if (!result.ok) {
+          notify("proposalSendFailed", "err");
+          return;
+        }
+        if (result.degraded === true) notify("modelDegraded", "err");
+        await applyProposalStatus(status, pick);
+        return;
+      }
+      /* 填稿通道（未勾自动发送）：无宿主接受事实 → **SHALL NOT 置位**。 */
+      if (!selectedBee) return;
+      const appended = await appendViaBridge(selectedBee, prompt);
+      if (!appended) return;
+      openFloat();
+    } finally {
+      setProposalBusy(false);
+    }
+  };
+
   /* 覆盖面板数据（7.x + 4.1/4.2 双数据源）：巢选中 = 选中工作室的世界派生；
      框选多选集非空 = world 巢内蜂按 marqueeSet 过滤（ids 与投影序 y→x 于松手时刻
      冻结，卡片内容经 worldVersion tick 实时跟随镜像）。marquee 优先：框选命中
@@ -2495,6 +3038,22 @@ function HivePage(props) {
             {t("hive.title")}
           </span>
           <span className="jyv-pageActions">
+            {/* 语音工作台（add-hive-voice-desk 3.4）：页头入口；未配置 key 时置灰 + 引导 */}
+            <button
+              type="button"
+              className={"jyv-toolBtn jyv-voiceBtn" + (voiceOpen ? " jyv-toolBtnOn" : "")}
+              title={voiceStatusState?.state === "not-configured" ? t("hive.voice.entryDisabled") : t("hive.voice.title")}
+              aria-label={t("hive.voice.title")}
+              aria-expanded={voiceOpen}
+              data-state={voiceStatusState?.state ?? "unknown"}
+              data-testid="voice-entry"
+              onClick={() => {
+                setVoiceOpen((open) => !open);
+                setVoiceStatusSeq((n) => n + 1);
+              }}
+            >
+              🎙
+            </button>
             {/* 图例（自底栏上收，图标形态；储蜜层一键镜头已随相机手势重排移除） */}
             <button type="button" className={"jyv-toolBtn" + (legend ? " jyv-toolBtnOn" : "")} title={t("hive.legend")} aria-label={t("hive.legend")} onClick={toggleLegend}>◑</button>
             <button
@@ -2562,15 +3121,14 @@ function HivePage(props) {
             settings={settings}
             setSettings={setSettings}
           />
-          {/* 完成状态栏（bee-status-cards 3.x/4.x）：左缘居中，逐蜂种完成池卡片 */}
-          <StatusBar
+          {/* 提案面板（add-proposal-panel 5.3）：左缘居中（原完成状态栏锚点），
+              按工作区分组的未归档 change 卡片；点卡选中 → 道具栏切提案栏。 */}
+          <ProposalPanel
             t={t}
             ctl={ctl}
             settings={settings}
-            beeTypes={beeTypes}
-            assignments={beeTypesStore.getAssignments()}
-            statusCards={statusCards}
-            notify={notify}
+            selectedProposal={selectedProposal}
+            onSelect={pickProposal}
             disabled={settingsOpen || swarmOpen || hotbarsOpen}
           />
         </div>
@@ -2595,9 +3153,11 @@ function HivePage(props) {
           slots={hotbarKind ? effectiveHotbarSlots(hotbarKind, hotbars[hotbarKind], t) : []}
           layout={layout}
           bridgeReady={composerBridge.inputActions !== null && composerBridge.phase === "plain"}
+          workerReady={Boolean(selectedBee)}
           disabled={settingsOpen || swarmOpen || hotbarsOpen}
           summonBusy={summonBusy}
           floorBusy={floorBusy}
+          proposalBusy={proposalBusy}
           onSlot={async (slot) => {
             if (hotbarKind === "bee") {
               /* 动作默认卡分派（用户定稿）：归档 = 既有 archiveBee 动词（与蜂卡/
@@ -2615,8 +3175,21 @@ function HivePage(props) {
             }
             else if (hotbarKind === "hive") await handleHiveSummon(slot);
             else if (hotbarKind === "floor") await handleFloorCard(slot);
+            else if (hotbarKind === "proposal") await handleProposalSlot(slot);
           }}
         />
+        {/* 语音状态表现（D12）：场景内没有蜂后化身 → 以页级光环映射
+            「待机暗淡 / 监听微光 / 播放随振幅 / 打断骤停」，配色取 palette 令牌。 */}
+        <div className="jyv-voiceAura" data-voice-state={voiceSnap.state} aria-hidden="true" />
+        {voiceOpen ? (
+          <VoiceDeskPanel
+            t={t}
+            desk={desk}
+            workspaces={voiceWorkspaces}
+            onWorkspace={(id) => setVoiceWs(id)}
+            onClose={() => setVoiceOpen(false)}
+          />
+        ) : null}
         {settingsOpen ? (
           <HiveSettingsModal
             t={t}
@@ -2624,9 +3197,15 @@ function HivePage(props) {
             setSettings={setSettings}
             guardRef={settingsGuardRef}
             onClose={() => setSettingsOpen(false)}
+            voiceStatusState={voiceStatusState}
+            onRefreshVoiceStatus={() => setVoiceStatusSeq((n) => n + 1)}
+            onSaveVoiceConfig={saveVoiceConfig}
+            workspaces={voiceWorkspaces}
           />
         ) : null}
         {swarmOpen ? (
+          /* 蜂群编辑（custom-bee-types 4.2）：表单已随 add-hotbar-llm-model-and-import 4.3
+             减肥——对话模型与预设提示词两字段移出（模型归指令卡 hotbar-card-model）。 */
           <BeeSwarmModal
             t={t}
             beeTypes={beeTypes}
@@ -2634,21 +3213,23 @@ function HivePage(props) {
             onClose={() => setSwarmOpen(false)}
             onSave={(rows) => ctl().actions.saveBeeTypes?.(rows) ?? Promise.resolve({ ok: false, error: "controller unavailable" })}
             onNotify={(text, kind) => notify?.(text, kind)}
-            modelCatalog={modelCatalog}
-            modelState={modelState}
           />
         ) : null}
         {hotbarsOpen ? (
-          /* 指令编辑模态（context-hotbar-rework 5.x）：左纵排四节（巢/蜂/地板/状态卡片） */
+          /* 指令编辑模态（context-hotbar-rework 5.x）：左纵排四节（巢/蜂/地板/状态卡片）；
+             add-hotbar-llm-model-and-import 5.x：模型/档位下拉（目录页面级 state 透传，
+             R12）+ 蜂栏导入入口（onNotify 透传，R8——此前无该 prop）。 */
           <HotbarsModal
             t={t}
             hotbars={hotbars}
-            statusCards={statusCards}
             beeTypes={beeTypes}
             layout={layout}
             guardRef={hotbarsGuardRef}
             onClose={() => setHotbarsOpen(false)}
-            onSave={(next, nextStatus) => ctl().actions.saveHotbars?.(next, nextStatus) ?? Promise.resolve({ ok: false, error: "controller unavailable" })}
+            onSave={(next) => ctl().actions.saveHotbars?.(next) ?? Promise.resolve({ ok: false, error: "controller unavailable" })}
+            onNotify={(text, kind) => notify?.(text, kind)}
+            modelCatalog={modelCatalog}
+            modelState={modelState}
           />
         ) : null}
       </div>
@@ -2783,7 +3364,12 @@ function toastText(t, text) {
     floorCreateFailed: t("hive.bar.toastFloorCreateFailed"),
     floorPickFailed: t("hive.bar.toastFloorPickFailed"),
     floorSummonFailed: t("hive.bar.toastFloorSummonFailed"),
-    summonAppendFailed: t("hive.bar.toastSummonAppendFailed")
+    summonAppendFailed: t("hive.bar.toastSummonAppendFailed"),
+    /* 蜂栏卡直发切模型失败（add-hotbar-llm-model-and-import D4：降级不阻断发送） */
+    modelDegraded: t("hive.bar.toastModelDegraded"),
+    /* 提案指令链路（add-proposal-panel 6.1；未命中即原样透出） */
+    proposalStatusSet: t("hive.proposal.toast.statusSet"),
+    proposalSendFailed: t("hive.proposal.toast.sendFailed")
   };
   return map[text] ?? text;
 }
@@ -2847,12 +3433,7 @@ const SetGroup = ({ label }) => <div className="jyv-setGroup">{label}</div>;
  * 预校验（字段级 zh/en 提示）→ 控制器 putState（409 重放 + host-stale 检测）。
  * ------------------------------------------------------------------ */
 
-/* 对话模型（LLM；与 3D 外观模型 beeModel 是两个不同字段）下拉的键构造——
- * 受控 value 与 <option> value 的唯一出处（fix-swarm-llm-model-select：历史上
- * option 用 JSON 串、value 用拼接串，两轨永不相等 → 选择后弹回默认）。 */
-const modelKeyOf = (m) => m.provider + "/" + m.model + (m.reasoningEffort ? "/" + m.reasoningEffort : "");
-
-function BeeSwarmModal({ t, beeTypes, guardRef, onClose, onSave, onNotify, modelCatalog, modelState }) {
+function BeeSwarmModal({ t, beeTypes, guardRef, onClose, onSave, onNotify }) {
   const [tab, setTab] = useState("types");
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const tabRefs = useRef({});
@@ -2966,23 +3547,6 @@ function BeeSwarmModal({ t, beeTypes, guardRef, onClose, onSave, onNotify, model
 
   /* 对话模型目录展开：options（含首项「使用默认模型」空键）+ 键→对象映射（onChange
    * 反查构造模型对象，杜绝 JSON-in-DOM-attribute；重键以先建者胜，查表不做手写解析）。 */
-  const modelOptions = (() => {
-    const items = [{ key: "", entry: null, label: t("hive.swarm.modelNone") }];
-    const byKey = new Map([["", null]]);
-    for (const g of modelCatalog?.groups ?? []) {
-      for (const mm of g.models ?? []) {
-        const efforts = mm.reasoning?.efforts ?? [];
-        for (const eff of efforts.length ? efforts : [null]) {
-          const entry = { provider: g.id, model: mm.id, ...(eff ? { reasoningEffort: eff.id } : {}) };
-          const key = modelKeyOf(entry);
-          if (!byKey.has(key)) byKey.set(key, entry);
-          items.push({ key, entry, label: g.name + " · " + mm.name + (eff ? " · " + eff.name : "") });
-        }
-      }
-    }
-    return { items, byKey };
-  })();
-
   const onTabKeyDown = (e) => {
     const order = ["types", "caps"];
     const idx = order.indexOf(tab);
@@ -3068,37 +3632,12 @@ function BeeSwarmModal({ t, beeTypes, guardRef, onClose, onSave, onNotify, model
                       ))}
                     </select>
                   </label>
-                  <label className="jyv-swarmField jyv-swarmFieldGrow">
-                    <span>{t("hive.swarm.model")}</span>
-                    {modelState === "loading" ? (
-                      <span className="jyv-swarmHint">{t("hive.swarm.modelLoading")}</span>
-                    ) : !modelCatalog ? (
-                      <span className="jyv-swarmHint">{t("hive.swarm.modelUnavailable")}</span>
-                    ) : (
-                      <select
-                        value={row.model ? modelKeyOf(row.model) : ""}
-                        onChange={(e) => patchType(row.id, { model: modelOptions.byKey.get(e.target.value) ?? undefined })}
-                      >
-                        {modelOptions.items.map((it) => (
-                          <option key={it.key} value={it.key}>{it.label}</option>
-                        ))}
-                      </select>
-                    )}
-                  </label>
                 </div>
                 <input
                   className="jyv-qcPromptInput jyv-swarmDesc"
                   value={row.description ?? ""}
                   placeholder={t("hive.swarm.descPlaceholder")}
                   onChange={(e) => patchType(row.id, { description: e.target.value })}
-                />
-                <textarea
-                  className="jyv-qcPromptInput jyv-swarmPreset"
-                  value={row.presetPrompt ?? ""}
-                  placeholder={t("hive.swarm.presetPromptPlaceholder")}
-                  aria-label={t("hive.swarm.presetPromptPlaceholder")}
-                  title={t("hive.swarm.presetPromptHint")}
-                  onChange={(e) => patchType(row.id, e.target.value.trim() ? { presetPrompt: e.target.value } : { presetPrompt: undefined })}
                 />
               </div>
             ))}
@@ -3252,7 +3791,7 @@ function BeeSwarmModal({ t, beeTypes, guardRef, onClose, onSave, onNotify, model
  *  左 nav rail（场景/外观/布局，上下/Home/End roving tabindex）+ 右内容滚动区。
  *  自绘框架（不 import 官方组件、不经 createPortal——bundle 纯净门），样式全走
  *  --dsw-alias-* token；「布局」节提供右侧/底部阵列 m×n 显示参数（localStorage）。 */
-function HiveSettingsModal({ t, settings, setSettings, guardRef, onClose }) {
+function HiveSettingsModal({ t, settings, setSettings, guardRef, onClose, voiceStatusState, onRefreshVoiceStatus, onSaveVoiceConfig, workspaces }) {
   const [section, setSection] = useState("scene");
 
   /* 关闭请求统一入口：设置即时生效无脏态 → 直接关。
@@ -3270,7 +3809,8 @@ function HiveSettingsModal({ t, settings, setSettings, guardRef, onClose }) {
       sections={[
         { key: "scene", icon: "◇", label: t("hive.settings.navScene") },
         { key: "appearance", icon: "✦", label: t("hive.settings.navAppearance") },
-        { key: "layout", icon: "▦", label: t("hive.settings.navLayout") }
+        { key: "layout", icon: "▦", label: t("hive.settings.navLayout") },
+        { key: "voice", icon: "🎙", label: t("hive.settings.navVoice") }
       ]}
       active={section}
       onNavigate={setSection}
@@ -3284,6 +3824,17 @@ function HiveSettingsModal({ t, settings, setSettings, guardRef, onClose }) {
       </div>
       <div className="jyv-modalBody" role="tabpanel" id="jyv-railPanel-layout" aria-labelledby="jyv-railTab-layout" hidden={section !== "layout"}>
         <LayoutSettingsBody t={t} settings={settings} setSettings={setSettings} />
+      </div>
+      <div className="jyv-modalBody" role="tabpanel" id="jyv-railPanel-voice" aria-labelledby="jyv-railTab-voice" hidden={section !== "voice"}>
+        <VoiceSettingsBody
+          t={t}
+          settings={settings}
+          setSettings={setSettings}
+          deskStatus={voiceStatusState}
+          onRefreshStatus={onRefreshVoiceStatus}
+          onSaveHostConfig={onSaveVoiceConfig}
+          workspaces={workspaces}
+        />
       </div>
     </RailModal>
   );
@@ -3404,9 +3955,8 @@ function SceneSettingsBody({ t, settings, setSettings }) {
       <SetRow label={t("hive.settings.follow")} hint={t("hive.settings.followHint")}>
         <SetToggle value={Boolean(settings?.followCurrent)} onChange={(v) => patch({ followCurrent: v })} />
       </SetRow>
-      <SetRow label={t("hive.settings.batchSendConfirm")} hint={t("hive.settings.batchSendConfirmHint")}>
-        <SetToggle value={settings?.batchSendConfirm !== false} onChange={(v) => patch({ batchSendConfirm: v })} />
-      </SetRow>
+      {/* 「批量发送人工确认」开关已随 bee-status-cards 全拆移除（add-proposal-panel 4.3）：
+          设置读取归一化另有显式剥离（旧 localStorage 键不残留）。 */}
     </div>
   );
 }
@@ -3531,7 +4081,6 @@ function LayoutSettingsBody({ t, settings, setSettings }) {
               reportRows: 8, // 作战报告面板可视行数默认（hive-combat-log）
               cameraPitchDeg: 45, // 俯角默认（二轮定稿 45）
               rightDragSpin: false, // 右键旋转默认关 = 全向平移（D4）
-              batchSendConfirm: true, // 批量发送人工确认默认开（bee-status-cards D6）
               appearance: { ...APPEARANCE_DEFAULTS, rev: APPEARANCE_REV },
               layout: { ...LAYOUT_DEFAULTS }
             })
@@ -3584,7 +4133,7 @@ function FpsMeter() {
  *    （经官方选择器）；默认卡与用户卡同 handler 同门控。
  * ------------------------------------------------------------------ */
 
-function HotbarBar({ t, kind, slots, layout, bridgeReady, disabled, summonBusy, floorBusy, onSlot }) {
+function HotbarBar({ t, kind, slots, layout, bridgeReady, workerReady, disabled, summonBusy, floorBusy, proposalBusy, onSlot }) {
   if (!kind) return null;
   const cols = Math.max(1, layout.barM);
   const rows = Math.max(1, layout.barN);
@@ -3625,6 +4174,22 @@ function HotbarBar({ t, kind, slots, layout, bridgeReady, disabled, summonBusy, 
           /* 召唤关闭 → 卡禁用（预留后续巢级动作，spec） */
           blocked = blocked || slot.summon !== true || summonBusy;
           title = slot.summon === true ? prompt || t("hive.bar.pureSummon") : t("hive.bar.summonOff");
+        } else if (kind === "proposal") {
+          /* 提案栏门控（add-proposal-panel 5.5/D5）：summon 关时——勾 autoSend 需当前
+             会话蜂（缺席禁用 + title 说明），未勾需桥就绪；summon 开时不受前两项门控，
+             但受在途锁约束（同一时刻至多一次提案指令执行）。提示词必填（无「纯召唤」
+             分支：召唤通道的 prompt 即首条消息，空白由编辑器已挡）。 */
+          if (slot.summon === true) {
+            blocked = blocked || proposalBusy;
+            title = prompt;
+          } else if (slot.autoSend === true) {
+            const noBee = !workerReady;
+            blocked = blocked || noBee || proposalBusy;
+            title = noBee ? t("hive.bar.proposalNoBee") : prompt;
+          } else {
+            blocked = blocked || !bridgeReady || proposalBusy;
+            title = prompt;
+          }
         } else {
           blocked = blocked || floorBusy;
           title = prompt || t("hive.bar.floorHint");
@@ -3636,13 +4201,14 @@ function HotbarBar({ t, kind, slots, layout, bridgeReady, disabled, summonBusy, 
             className="jyv-hbCard"
             data-auto={slot.autoSend === true || undefined}
             data-action={slot.action || undefined}
-            data-busy={(kind === "hive" && summonBusy) || (kind === "floor" && floorBusy) || undefined}
+            data-busy={(kind === "hive" && summonBusy) || (kind === "floor" && floorBusy) || (kind === "proposal" && proposalBusy) || undefined}
             disabled={blocked}
             title={title}
             onClick={() => onSlot(slot)}
           >
             {kind === "hive" ? <span className="jyv-hbGlyph" aria-hidden="true">🥚</span> : null}
             {kind === "floor" ? <span className="jyv-hbGlyph" aria-hidden="true">⬡</span> : null}
+            {kind === "proposal" ? <span className="jyv-hbGlyph" aria-hidden="true">✦</span> : null}
             {slot.autoSend === true ? <span className="jyv-hbBolt" aria-hidden="true">⚡</span> : null}
             {/* 内置角标（hotbar-default-actions 3.2，审阅 F1）：独立 span 自带提示，
                 不覆盖卡体 title（卡体保持提示词/归档警示/建巢提示等动作语义） */}
@@ -3977,193 +4543,123 @@ function CombatLogPanel({ t, ctl, settings, setSettings }) {
 }
 
 /* ------------------------------------------------------------------ *
- * 完成状态栏（bee-status-cards 3.x/4.x，design D1/D2/D5/D7）：
- *  - canvasWrap 内左缘垂直居中层（.jyv-statusBar），max-height 滚动；
- *  - 逐蜂种完成池卡片 + 默认蜂末位卡，实时数（worldVersion 驱动派生）；
- *  - 点卡体循环选蜂（稳定序游标取模）；已配置发送按钮批量派发（快照 → 阀门
- *    → 顺序直发 → toast 汇总）；确认弹窗走 useModalGuard 进 Esc 分层。
+ * 提案面板（add-proposal-panel 5.3/5.4，design D9）：
+ *  - canvasWrap 内左缘垂直居中（原完成状态栏锚点 .jyv-proposalPanel），max-height 滚动；
+ *  - 工作区分组（组序 = 宿主返回序、组内名称序），**只渲染非空组**（宿主恒返回全部在册
+ *    工作区，空组口径在客户端）；组标题空串回退工作区 id；
+ *  - 状态 = 色点 + 本地化名称 + 时间戳悬停提示（无状态 = 无标记）；
+ *  - 点卡选中/再点取消（页面级瞬态，不进文档、不进场景选中槽）；模态期禁用；
+ *  - 头部刷新按钮 + 空态刷新入口（watcher 降级路径的一等公民）。
  * ------------------------------------------------------------------ */
 
-function StatusBar({ t, ctl, settings, beeTypes, assignments, statusCards, notify, disabled }) {
-  const worldVersion = useSyncExternalStore(
-    (listener) => worldVersionStore.subscribe(listener),
-    () => worldVersionStore.getSnapshot()
+function ProposalPanel({ t, ctl, settings, disabled, selectedProposal, onSelect, onRefresh }) {
+  /* 清单镜像（5.2）：seq 变化即重渲染（拉取成功/失败都 bump，刷新反馈不吞）。 */
+  useSyncExternalStore(
+    (listener) => proposalsStore.subscribe(listener),
+    () => proposalsStore.getSnapshot()
   );
-  void worldVersion; // 订阅即目的：世界派生 tick 时重算完成池
+  const groups = proposalsStore.getGroups();
+  const loading = proposalsStore.isLoading();
+  const error = proposalsStore.getError();
 
-  /* 动效降级合成（与 CombatLogPanel 同款三态公式）：reduced = 关闭 或（非强制 && 系统减动效）。 */
-  const [systemReduce, setSystemReduce] = useState(
-    () => typeof window !== "undefined" && Boolean(window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches)
-  );
+  /* 状态位（被动枚举位）：随 layout-changed 文档镜像流动，经控制器直读。 */
+  const states = ctl().actions.proposalStates?.() ?? {};
+
+  /* 报告让位 reserve（R13：机制保留换主）：收起 = pill 高；展开 = rows×24 + 头部 + 边距。 */
+  const reservePx = panelReserve({ reportCollapsed: settings.reportCollapsed === true, reportRows: settings.reportRows });
+
+  const refresh = () => {
+    const run = onRefresh ?? (() => ctl().actions.refreshProposals?.());
+    try {
+      const result = run();
+      if (result && typeof result.catch === "function") result.catch(() => {});
+    } catch {
+      /* 刷新失败已由 store 记录（面板保持旧清单 + 错误/空态提示） */
+    }
+  };
+
+  /* 打开面板即拉取（降级路径的「可见时拉取」语义）；模态期禁用但保持挂载。 */
   useEffect(() => {
-    const mq = typeof window !== "undefined" ? window.matchMedia?.("(prefers-reduced-motion: reduce)") : null;
-    if (!mq) return undefined;
-    const apply = () => setSystemReduce(Boolean(mq.matches));
-    apply();
-    mq.addEventListener?.("change", apply);
-    return () => mq?.removeEventListener?.("change", apply);
+    refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  const reduced = settings.animation === "reduced" || (settings.animation !== "force" && systemReduce);
-
-  const world = ctl().actions.getScene?.()?.world ?? null;
-  const sessionsState = ctl().actions.sessionsSnapshot?.() ?? null;
-  const pool = completionPool(world, assignments, sessionsState);
-
-  /* 报告让位 reserve（design D2）：收起 = pill 高；展开 = rows×24 + 头部 + 边距。 */
-  const reservePx = statusBarReserve({ reportCollapsed: settings.reportCollapsed === true, reportRows: settings.reportRows });
-
-  /* 循环选蜂游标：per 卡 ref（design D7，不跨页持久）。key = 蜂种 id。 */
-  const cursorsRef = useRef({});
-
-  /* 批量发送编排态：{ typeId, sending, pending, snapshot } 一次一组。 */
-  const [sendState, setSendState] = useState(null);
-  const [confirm, setConfirm] = useState(null); // { typeId, prompt, targets } | null
-
-  const cards = [
-    ...beeTypes.map((bt) => ({ typeId: bt.id, name: bt.name || bt.id })),
-    { typeId: "default", name: t("hive.status.default") }
-  ];
-
-  /* 卡体点击 → 循环选蜂（D7）。空池 no-op。 */
-  const pickBee = (typeId) => {
-    const sessions = completionSessions(pool, typeId);
-    if (sessions.length === 0) return;
-    const cursor = advanceCursor(sessions.length, cursorsRef.current[typeId] ?? 0);
-    cursorsRef.current[typeId] = cursor;
-    ctl().actions.clearSelection?.();
-    ctl().actions.selectBee(sessions[cursor]);
-  };
-
-  /* 批量发送（D5）：快照 → 阀门分流 → 顺序直发 → toast 汇总。in-flight 锁。 */
-  const runBatch = async (typeId) => {
-    const cfg = statusCards?.[typeId];
-    if (!cfg || !String(cfg.prompt ?? "").trim()) return;
-    const snapshot = snapshotSessions(pool, typeId);
-    if (snapshot.length === 0) {
-      notify(t("hive.status.toastNone"), "err");
-      return;
-    }
-    const valved = cfg.autoSend !== true && settings.batchSendConfirm !== false;
-    if (valved) {
-      setConfirm({ typeId, prompt: cfg.prompt, targets: snapshot });
-      return;
-    }
-    await deliver(typeId, snapshot);
-  };
-
-  const cancelConfirm = () => {
-    setConfirm(null);
-  };
-  /* 确认弹窗 Esc 层：仅挂载（confirm 非空）时注册请求关闭 = 放弃发送；取消/✕/遮罩
-     同路（复用 cancelConfirm）。Esc = 取消 = 放弃本次发送（spec）。 */
-  useEffect(() => {
-    if (!confirm) return undefined;
-    pushModalEntry("statusConfirm", cancelConfirm);
-    return () => removeModalEntry("statusConfirm");
-  }, [confirm]);
-
-  const deliver = async (typeId, snapshot) => {
-    const cfg = statusCards?.[typeId];
-    setSendState({ typeId, sending: true });
-    let okCount = 0;
-    let failCount = 0;
-    for (const sessionId of snapshot) {
-      const result = await sendCommand(sessionId, cfg?.prompt ?? "");
-      if (result?.ok) okCount++;
-      else {
-        failCount++;
-        console.warn("[dsh-v-hive] status-card send failed:", sessionId, result?.error);
-      }
-    }
-    setSendState(null);
-    notify(t("hive.status.toastSent").replace("{n}", String(okCount)).replace("{m}", String(failCount)), failCount > 0 ? "err" : "ok");
-  };
-
-  const confirmSend = async () => {
-    const c = confirm;
-    setConfirm(null);
-    if (c) await deliver(c.typeId, c.targets);
-  };
 
   if (disabled) return null;
 
-  const allCards = cards;
-  /* 完成信息总数（全部蜂种完成池之和）：≤0 时整栏向左收起，>0 时从屏幕外向右切入。 */
-  const totalDone = allCards.reduce((acc, c) => acc + completionSessions(pool, c.typeId).length, 0);
+  /* 只渲染非空组（宿主恒返回全部在册工作区，空组口径在客户端）。 */
+  const visible = groups.filter((group) => (group?.changes ?? []).length > 0);
+  const total = visible.reduce((acc, group) => acc + group.changes.length, 0);
+
   return (
-    <>
-      <div
-        className="jyv-statusBar"
-        role="group"
-        aria-label={t("hive.status.aria")}
-        data-hidden={totalDone <= 0 ? "true" : undefined}
-        data-reduced={reduced ? "true" : undefined}
-        style={{ "--jyv-statusBarBottom": "calc(76px + " + reservePx + "px)" }}
-      >
-        {allCards.map((card) => {
-          const sessions = completionSessions(pool, card.typeId);
-          const count = sessions.length;
-          const cfg = statusCards?.[card.typeId];
-          const configured = !!cfg && String(cfg.prompt ?? "").trim().length > 0;
-          const isDefault = card.typeId === "default";
-          const sending = sendState?.sending && sendState.typeId === card.typeId;
-          const disabledBtn = count === 0 || sending;
-          return (
-            <div
-              key={card.typeId}
-              className={"jyv-statusCard" + (isDefault ? " jyv-statusDefault" : "")}
-              title={t("hive.status.cardTitle").replace("{name}", card.name).replace("{count}", String(count))}
-              onClick={() => pickBee(card.typeId)}
-            >
-              <span className="jyv-statusName">{card.name}</span>
-              <span className={"jyv-statusCount" + (count > 0 ? " jyv-statusCountOn" : "")}>{count}</span>
-              {!isDefault && configured ? (
-                <button
-                  type="button"
-                  className="jyv-statusSend"
-                  disabled={disabledBtn}
-                  title={count === 0 ? t("hive.status.sendEmpty") : t("hive.status.send")}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    runBatch(card.typeId);
-                  }}
-                >
-                  {sending ? "…" : "➤"}
-                </button>
-              ) : null}
-            </div>
-          );
-        })}
+    <div
+      className="jyv-proposalPanel"
+      role="group"
+      aria-label={t("hive.proposal.aria")}
+      style={{ "--jyv-panelBottom": "calc(76px + " + reservePx + "px)" }}
+    >
+      <div className="jyv-proposalHead">
+        <span className="jyv-proposalTitle">{t("hive.proposal.title")}</span>
+        <button
+          type="button"
+          className="jyv-proposalRefresh"
+          title={loading ? t("hive.proposal.refreshing") : t("hive.proposal.refresh")}
+          aria-label={t("hive.proposal.refresh")}
+          disabled={loading}
+          onClick={refresh}
+        >
+          {loading ? "…" : "⟳"}
+        </button>
       </div>
-      {confirm ? (
-        <div className="jyv-modalBack jyv-statusConfirmBack" onClick={cancelConfirm}>
-          <div className="jyv-modal jyv-statusConfirm" role="dialog" aria-modal="true" aria-label={t("hive.status.confirmTitle")} onClick={(e) => e.stopPropagation()}>
-            <div className="jyv-modalHead">
-              <span className="jyv-modalTitle">{t("hive.status.confirmTitle")}</span>
-              <button type="button" className="jyv-toolBtn" title={t("hive.status.cancel")} onClick={cancelConfirm}>×</button>
-            </div>
-            <div className="jyv-modalBody">
-              <div className="jyv-statusConfirmHint">{t("hive.status.confirmHint")} · {t("hive.status.confirmTargets")}: {confirm.targets.length}</div>
-              <div className="jyv-statusConfirmLabel">{t("hive.status.confirmPrompt")}</div>
-              <pre className="jyv-statusConfirmPrompt">{confirm.prompt}</pre>
-            </div>
-            <div className="jyv-modalHead">
-              <button type="button" className="jyv-qcSave" onClick={confirmSend}>{t("hive.status.confirm")}</button>
-              <button type="button" className="jyv-qcDiscard" onClick={cancelConfirm}>{t("hive.status.cancel")}</button>
-            </div>
-          </div>
+      {total === 0 ? (
+        <div className="jyv-proposalEmpty">
+          {error ? t("hive.proposal.error") : t("hive.proposal.empty")}
+          <button type="button" className="jyv-proposalEmptyBtn" disabled={loading} onClick={refresh}>
+            {t("hive.proposal.refresh")}
+          </button>
         </div>
-      ) : null}
-    </>
+      ) : (
+        visible.map((group) => (
+          <div key={group.workspaceId} className="jyv-proposalGroup">
+            {/* 组标题空串回退工作区 id（宿主原样透传 title，回退在客户端） */}
+            <div className="jyv-proposalGroupName" title={group.path ?? ""}>
+              {String(group.title ?? "").trim() || group.workspaceId}
+            </div>
+            {group.changes.map((change) => {
+              const status = typeof change.status === "string" ? change.status : "";
+              const color = proposalStatusColor(status);
+              const entry = states[proposalStateKey(group.workspaceId, change.name)];
+              const on = selectedProposal?.workspaceId === group.workspaceId && selectedProposal?.name === change.name;
+              const stamp = Number.isFinite(entry?.at) ? new Date(entry.at).toLocaleString() : "";
+              return (
+                <button
+                  key={change.name}
+                  type="button"
+                  className="jyv-proposalCard"
+                  data-on={on ? "true" : undefined}
+                  data-status={status || undefined}
+                  title={stamp ? change.name + " · " + t("hive.proposal.status." + status) + " · " + stamp : change.name}
+                  aria-pressed={on}
+                  onClick={() => onSelect?.({ workspaceId: group.workspaceId, name: change.name })}
+                >
+                  {color ? <span className="jyv-proposalDot" style={{ background: color }} aria-hidden="true" /> : null}
+                  <span className="jyv-proposalName">{change.name}</span>
+                  {color ? <span className="jyv-proposalState">{t("hive.proposal.status." + status)}</span> : null}
+                </button>
+              );
+            })}
+          </div>
+        ))
+      )}
+    </div>
   );
 }
 
 /* ------------------------------------------------------------------ *
  * 指令编辑模态（context-hotbar-rework 5.x，D9）：页头 ⌘ 入口，左纵排四节
- * （巢栏/蜂栏/地板栏/状态卡片）。槽位列表 CRUD + 上移下移（顺序 = 展示序）+
- * 按栏裁剪编辑表单（字段联动禁用）+ 暂存-保存模型（草稿态 + 未保存标记 +
- * 一次性写入 + 409 重放）+ 校验拒绝 + 容量超出提示 + 脏草稿离开提醒；
- * 状态卡片节（bee-status-cards D4）：蜂种列表 + 唯一配置编辑（prompt/autoSend/清除）。
+ * （巢栏/蜂栏/地板栏/提案栏——第四节随 add-proposal-panel 由「状态卡片」换为
+ * 「提案栏」）。槽位列表 CRUD + 上移下移（顺序 = 展示序）+ 按栏裁剪编辑表单
+ * （字段联动禁用）+ 暂存-保存模型（草稿态 + 未保存标记 + 一次性写入 + 409 重放）
+ * + 校验拒绝 + 容量超出提示 + 脏草稿离开提醒。
  * ------------------------------------------------------------------ */
 
 /** 槽位行 id（crypto.randomUUID 优先，非安全上下文退化为时间+随机）。 */
@@ -4176,19 +4672,19 @@ function newSlotId() {
   return "slot-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10);
 }
 
-function HotbarsModal({ t, hotbars, statusCards, beeTypes, layout, guardRef, onClose, onSave }) {
+function HotbarsModal({ t, hotbars, beeTypes, layout, guardRef, onClose, onSave, onNotify, modelCatalog, modelState }) {
   const [section, setSection] = useState("hive");
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [selectedId, setSelectedId] = useState(null);
   const [error, setError] = useState(null); // { index, field, code } | { code } | null
   const [saving, setSaving] = useState(false);
   const [draft, setDraft] = useState(() => normalizeHotbars(hotbars));
-  /* 状态卡片草稿（bee-status-cards D4）：独立于槽位草稿，选中蜂种 id + 配置值 */
-  const [statusDraft, setStatusDraft] = useState(() => normalizeStatusCards(statusCards, beeTypes));
-  const [statusSelected, setStatusSelected] = useState(null);
+  /* 导入源可用性（plugin-config-import，任务 5.3）：打开模态探一次（非活同步、非周期拉取），
+     点击导入时再按键主动拉取实际数据；`available:false` → 按钮灰置 + 悬停原因。 */
+  const [importState, setImportState] = useState({ status: "loading", reason: null });
+  const [importing, setImporting] = useState(false);
   const hotbarsDirty = JSON.stringify(draft) !== JSON.stringify(normalizeHotbars(hotbars));
-  const statusDirty = JSON.stringify(statusDraft) !== JSON.stringify(normalizeStatusCards(statusCards, beeTypes));
-  const dirty = hotbarsDirty || statusDirty;
+  const dirty = hotbarsDirty;
   const dirtyRef = useRef(false);
   dirtyRef.current = dirty;
 
@@ -4196,13 +4692,22 @@ function HotbarsModal({ t, hotbars, statusCards, beeTypes, layout, guardRef, onC
   useEffect(() => {
     if (!hotbarsDirty) setDraft(normalizeHotbars(hotbars));
   }, [hotbars, hotbarsDirty]);
+
+  /* 导入源可用性探针（任务 5.3/5.2）：模态打开探一次——只为「按钮灰置 + 悬停原因」，
+     不是活同步也不是自动落稿；实际数据在点击时按键主动拉取（按键主动导入一次）。 */
   useEffect(() => {
-    if (!statusDirty) {
-      setStatusDraft(normalizeStatusCards(statusCards, beeTypes));
-      /* 选中的蜂种若已被删除（级联清理后不再在册）→ 清空选中 */
-      setStatusSelected((prev) => (prev && !beeTypes.some((bt) => bt.id === prev) ? null : prev));
-    }
-  }, [statusCards, beeTypes, statusDirty]);
+    let alive = true;
+    fetchImportButtons().then((result) => {
+      if (!alive) return;
+      if (result.ok === true && result.available === true) setImportState({ status: "ready", reason: null });
+      else if (result.ok === true) setImportState({ status: "unavailable", reason: result.reason });
+      else if (result.stale) setImportState({ status: "stale", reason: null });
+      else setImportState({ status: "error", reason: result.error });
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   const requestClose = () => {
     if (dirtyRef.current) {
@@ -4224,12 +4729,16 @@ function HotbarsModal({ t, hotbars, statusCards, beeTypes, layout, guardRef, onC
     }));
   const addSlot = () => {
     setError(null);
+    /* 形状三元按栏分派（context-hotbar-rework 5.x + add-proposal-panel 5.6）：
+       提案栏形状 = 提示词模板（必填）+ 新召唤开关（默认否）+ 状态置位缺省。 */
     const fresh =
       section === "bee"
         ? { id: newSlotId(), name: "", prompt: "", autoSend: false }
         : section === "hive"
           ? { id: newSlotId(), name: "", summon: false, autoSend: false }
-          : { id: newSlotId(), name: "", createBee: true, autoSend: false };
+          : section === "proposal"
+            ? { id: newSlotId(), name: "", summon: false, prompt: "", autoSend: false }
+            : { id: newSlotId(), name: "", createBee: true, autoSend: false };
     setDraft((prev) => ({ ...prev, [section]: [...prev[section], fresh] }));
     setSelectedId(fresh.id);
   };
@@ -4249,25 +4758,8 @@ function HotbarsModal({ t, hotbars, statusCards, beeTypes, layout, guardRef, onC
       return { ...prev, [section]: next };
     });
 
-  /* 状态卡片草稿增改/清除（D4）：prompt trim 空白 = 清除该蜂种配置。 */
-  const patchStatus = (typeId, p) =>
-    setStatusDraft((prev) => {
-      const next = { ...prev };
-      const merged = { prompt: "", autoSend: false, ...(next[typeId] ?? {}), ...p };
-      const prompt = String(merged.prompt ?? "").trim();
-      if (!prompt) delete next[typeId];
-      else next[typeId] = { prompt, autoSend: merged.autoSend === true };
-      return next;
-    });
-  const clearStatus = (typeId) =>
-    setStatusDraft((prev) => {
-      const next = { ...prev };
-      delete next[typeId];
-      return next;
-    });
-
   const save = async () => {
-    /* 三栏全量校验（S6 单点）：首个命中字段级错误即拒绝，草稿态不变。 */
+    /* 四栏全量校验（S6 单点）：首个命中字段级错误即拒绝，草稿态不变。 */
     for (const kind of HOTBAR_KINDS) {
       const verdict = validateSlotDraft(draft[kind] ?? [], kind, { capacity });
       if (verdict.error) {
@@ -4280,14 +4772,11 @@ function HotbarsModal({ t, hotbars, statusCards, beeTypes, layout, guardRef, onC
     /* 预 normalize 对齐宿主落库形态（trim/字段矩阵裁剪同源）——保存成功后草稿
        与镜像逐字一致，脏标记消解（saveBeeTypes 双侧 normalize 纪律）。 */
     const aligned = normalizeHotbars(draft);
-    /* 状态卡片草稿（D4）：同帧写入 statusCards（写入时宿主归一化丢弃悬空键）。 */
-    const alignedStatus = normalizeStatusCards(statusDraft, beeTypes);
-    const result = await onSave(aligned, alignedStatus);
+    const result = await onSave(aligned);
     setSaving(false);
     if (result?.ok) {
       setError(null);
       setDraft(normalizeHotbars(result.doc?.hotbars ?? aligned));
-      setStatusDraft(normalizeStatusCards(result.doc?.statusCards ?? alignedStatus, beeTypes));
       return;
     }
     setError(result?.error === "host-stale" ? { code: "hostStale" } : { code: "saveFailed" });
@@ -4308,6 +4797,97 @@ function HotbarsModal({ t, hotbars, statusCards, beeTypes, layout, guardRef, onC
           ? t(error.code)
           : null;
 
+  /* ── 模型/推理档位选项（add-hotbar-llm-model-and-import D5/R3：共享纯函数模块，
+        值轨道与档位派生单源；SHALL NOT 复制内联实现） ── */
+  const tr = (key) => (typeof t === "function" ? t(key) : key);
+  const modelOptions = buildModelOptions(modelCatalog, tr);
+  /* 目录三态：loading / unavailable（无活会话或拉取失败）/ ready。不可用态只挡新选择——
+     草稿已绑定的模型值在 draft 中原样保留（SHALL NOT 清空或改写）。 */
+  const modelUnavailable = modelState === "loading" || !modelCatalog;
+
+  /* 本地化模板填充（R8：toast 只吃「语义键」或完整文本——导入汇报带三个计数，
+     调用方先填好文本再 notify，`toastText` 未命中即原样透出）。 */
+  const fill = (key, vars) =>
+    String(tr(key)).replace(/\{(\w+)\}/g, (whole, name) => (name in vars ? String(vars[name]) : whole));
+
+  /* 导入按钮悬停原因（两态可区分，spec「导入入口降级」）：未安装/未启用 vs 宿主 settings 缺席。 */
+  const importHint =
+    importState.status === "ready"
+      ? tr("hive.hb.importHint")
+      : importState.status === "loading"
+        ? tr("hive.hb.importLoading")
+        : importState.status === "unavailable" && importState.reason === "settings-service-absent"
+          ? tr("hive.hb.importServiceAbsent")
+          : importState.status === "unavailable"
+            ? tr("hive.hb.importNotInstalled")
+            : importState.status === "stale"
+              ? tr("hive.hb.importStale")
+              : tr("hive.hb.importRetry");
+  /* 只有「源不可用」（两态）与探针加载中灰置；拉取失败（404/网络错）保持可点，点击重试并 toast。 */
+  const importDisabled = importing || importState.status === "loading" || importState.status === "unavailable";
+
+  /**
+   * 按键主动导入（plugin-config-import「导入动作语义」，R9/R10）：
+   * 拉取 → 按源数组序逐条映射蜂栏草稿槽位（id 重铸、model 1:1、非法剥离）→
+   * 重名跳过（trim 比对；名单 = normalizeHotbars(draft).bee 既有名 + 本批已接受名）→
+   * 32 上限逐条判定、装不下即止计 K（保序不回填）→ toast 汇报 N/M/K。
+   * 只改草稿不落库；拉取失败 → toast 且草稿零变化（无半批）。
+   */
+  const runImport = async () => {
+    if (importing || importDisabled) return;
+    setImporting(true);
+    const result = await fetchImportButtons();
+    setImporting(false);
+    if (result.ok !== true || result.available !== true) {
+      if (result.ok === true) {
+        setImportState({ status: "unavailable", reason: result.reason });
+        onNotify?.(result.reason === "settings-service-absent" ? tr("hive.hb.importServiceAbsent") : tr("hive.hb.importNotInstalled"), "err");
+      } else if (result.stale) {
+        setImportState({ status: "stale", reason: null });
+        onNotify?.(tr("hive.hb.importStale"), "err");
+      } else {
+        setImportState({ status: "error", reason: result.error });
+        onNotify?.(fill("hive.hb.importFailed", { err: result.error }), "err");
+      }
+      return; // 草稿 SHALL NOT 发生任何变化（无半批次导入）
+    }
+    setImportState({ status: "ready", reason: null });
+    const source = Array.isArray(result.buttons) ? result.buttons : [];
+    /* 既有名单取**归一化后**的蜂栏草稿名（trim、栏内去重、容量截断均已生效的那一份，R9）。 */
+    const existingNames = normalizeHotbars(draft).bee.map((slot) => slot.name);
+    const seen = new Set(existingNames);
+    const limit = Math.max(0, HOTBAR_COLUMN_LIMIT - existingNames.length);
+    const added = [];
+    let skipped = 0;
+    let capacityBlocked = 0;
+    for (let index = 0; index < source.length; index++) {
+      const button = source[index] ?? {};
+      const name = typeof button.name === "string" ? button.name.trim() : "";
+      const prompt = typeof button.prompt === "string" ? button.prompt.trim() : "";
+      if (!name || !prompt) continue; // 形状防御（宿主已滤，双保险）
+      if (seen.has(name)) {
+        skipped += 1; // 重名（含本批内部重复）跳过不导入
+        continue;
+      }
+      if (added.length >= limit) {
+        /* 逐条判定：剩余容量不足 → 停止导入并计入未导入数（SHALL NOT 跳过后重试，保序）。 */
+        capacityBlocked = source.length - index;
+        break;
+      }
+      seen.add(name);
+      const slot = { id: newSlotId(), name, prompt, autoSend: button.autoSend === true };
+      if (isValidSlotModel(button.model)) {
+        const normalized = normalizeSlotModel(button.model);
+        if (normalized) slot.model = normalized; // model 1:1 映射；形状非法 → 剥离字段保主体
+      }
+      added.push(slot);
+    }
+    if (added.length > 0) {
+      setDraft((prev) => ({ ...prev, bee: [...(prev.bee ?? []), ...added] }));
+    }
+    onNotify?.(fill("hive.hb.importSummary", { n: added.length, m: skipped, k: capacityBlocked }), added.length > 0 ? "ok" : "err");
+  };
+
   const kindLabel = (kind) => t("hive.hb.tab" + kind.charAt(0).toUpperCase() + kind.slice(1));
 
   return (
@@ -4319,7 +4899,9 @@ function HotbarsModal({ t, hotbars, statusCards, beeTypes, layout, guardRef, onC
         { key: "hive", icon: "⬡", label: kindLabel("hive") },
         { key: "bee", icon: "🐝", label: kindLabel("bee") },
         { key: "floor", icon: "▤", label: kindLabel("floor") },
-        { key: "status", icon: "✦", label: t("hive.hb.tabStatus") }
+        /* 第四节（add-proposal-panel 5.6）：由「状态卡片」换为「提案栏」，仍四节；
+           标签经 kindLabel 拼键 → hive.hb.tabProposal。 */
+        { key: "proposal", icon: "✦", label: kindLabel("proposal") }
       ]}
       active={section}
       onNavigate={setSection}
@@ -4333,17 +4915,6 @@ function HotbarsModal({ t, hotbars, statusCards, beeTypes, layout, guardRef, onC
         </div>
       ) : null}
       <div className="jyv-modalBody jyv-hbBody" role="tabpanel" id={"jyv-railPanel-" + section} aria-labelledby={"jyv-railTab-" + section}>
-        {section === "status" ? (
-          <StatusCardsSection
-            t={t}
-            beeTypes={beeTypes}
-            statusDraft={statusDraft}
-            selected={statusSelected}
-            onSelect={setStatusSelected}
-            onPatch={patchStatus}
-            onClear={clearStatus}
-          />
-        ) : (
         <>
         {/* 槽位列表（顺序 = 展示序） */}
         <div className="jyv-qcRows">
@@ -4369,8 +4940,10 @@ function HotbarsModal({ t, hotbars, statusCards, beeTypes, layout, guardRef, onC
               </div>
               {selectedId === row.id ? (
                 <div className="jyv-hbForm" onClick={(e) => e.stopPropagation()}>
-                  {section === "hive" ? (
-                    <label className="jyv-qcAuto" title={t("hive.hb.summonHint")}>
+                  {/* 新召唤开关（巢栏 / 提案栏，add-proposal-panel 5.6）：提案栏勾选后
+                      点击卡片在该提案所属工作区召唤新蜂（cwd = 提案所属工作区）。 */}
+                  {section === "hive" || section === "proposal" ? (
+                    <label className="jyv-qcAuto" title={section === "proposal" ? t("hive.hb.proposalSummonHint") : t("hive.hb.summonHint")}>
                       <input
                         type="checkbox"
                         checked={row.summon === true}
@@ -4394,7 +4967,13 @@ function HotbarsModal({ t, hotbars, statusCards, beeTypes, layout, guardRef, onC
                       <span>{t("hive.hb.beeType")}</span>
                       <select
                         value={row.beeTypeId ?? ""}
-                        disabled={(section === "hive" ? row.summon !== true : row.createBee !== true)}
+                        /* 字段联动禁用：巢栏/提案栏随 summon、地板栏随 createBee
+                           （提案栏蜂种是「新召唤落哪个蜂种」，故与 summon 联动）。 */
+                        disabled={
+                          section === "hive" || section === "proposal"
+                            ? row.summon !== true
+                            : row.createBee !== true
+                        }
                         onChange={(e) => patchSlot(row.id, e.target.value ? { beeTypeId: e.target.value } : { beeTypeId: undefined })}
                       >
                         <option value="">{t("hive.hb.beeTypeDefault")}</option>
@@ -4404,19 +4983,97 @@ function HotbarsModal({ t, hotbars, statusCards, beeTypes, layout, guardRef, onC
                       </select>
                     </label>
                   ) : null}
-                  {/* 提示词（字段联动禁用）：蜂栏必填；巢/地板栏仅召唤/建蜂开启时接受 */}
+                  {/* LLM 模型（add-hotbar-llm-model-and-import 5.1/D5，三栏全开）：键 = 两维
+                      `provider/model`（受控 value 与 option value 同出 modelKeyOf）；空键 =
+                      「使用默认模型」= 不绑定（跟随部署默认 `modelCatalog().default`）。
+                      字段联动禁用与提示词同门控（巢栏 summon 关 / 地板栏 createBee 关）。
+                      目录 loading/unavailable → 提示替代控件，草稿已存值保留不丢。 */}
+                  <label className="jyv-swarmField jyv-swarmFieldGrow">
+                    <span>{t("hive.hb.model")}</span>
+                    {modelState === "loading" ? (
+                      <span className="jyv-swarmHint">{t("hive.swarm.modelLoading")}</span>
+                    ) : !modelCatalog ? (
+                      <span className="jyv-swarmHint" title={t("hive.swarm.modelUnavailable")}>{t("hive.swarm.modelUnavailable")}</span>
+                    ) : (
+                      <select
+                        value={row.model ? modelKeyOf(row.model) : MODEL_KEY_NONE}
+                        disabled={section === "hive" || section === "proposal" ? row.summon !== true : section === "floor" ? row.createBee !== true : false}
+                        onChange={(e) => {
+                          const entry = modelOptions.byKey.get(e.target.value) ?? null;
+                          /* 换模型 = 重选绑定（旧档位不跨模型沿用）；切回默认 → 写 undefined
+                             （SHALL NOT 留空对象占位）；切档由档位下拉独立负责。 */
+                          patchSlot(row.id, { model: entry ? { provider: entry.provider, model: entry.model } : undefined });
+                        }}
+                      >
+                        {modelOptions.items.map((it) => (
+                          <option key={it.key} value={it.key}>{it.label}</option>
+                        ))}
+                      </select>
+                    )}
+                  </label>
+                  {/* 推理档位（独立控件）：仅所选模型暴露 reasoning.efforts 时渲染（否则整控件
+                      不渲染）；首项空键「模型默认档位」不写 reasoningEffort（由宿主按目录
+                      defaultEffort 语义执行）。 */}
+                  {(() => {
+                    const effortOptions = effortOptionsOf(row.model, modelCatalog, tr);
+                    if (!effortOptions) return null;
+                    return (
+                      <label className="jyv-swarmField">
+                        <span>{t("hive.hb.effort")}</span>
+                        <select
+                          value={effortOptions.selectedEffortKey}
+                          disabled={section === "hive" || section === "proposal" ? row.summon !== true : section === "floor" ? row.createBee !== true : false}
+                          onChange={(e) => {
+                            const entry = effortOptions.byKey.get(e.target.value) ?? null;
+                            if (!row.model) return;
+                            patchSlot(row.id, {
+                              model: entry
+                                ? { provider: entry.provider, model: entry.model, reasoningEffort: entry.reasoningEffort }
+                                : { provider: row.model.provider, model: row.model.model }
+                            });
+                          }}
+                        >
+                          {effortOptions.items.map((it) => (
+                            <option key={it.key} value={it.key}>{it.label}</option>
+                          ))}
+                        </select>
+                      </label>
+                    );
+                  })()}
+                  {/* 提示词（字段联动禁用）：蜂栏与提案栏必填；巢/地板栏仅召唤/建蜂开启时接受。
+                      提案栏：模板，`{change}` 执行时替换为选中提案名（说明文案见 placeholder 提示）。 */}
                   <label className="jyv-swarmField">
-                    <span>{t("hive.hb.prompt")}{section === "bee" ? " · " + t("hive.hb.promptRequired") : ""}</span>
+                    <span>
+                      {t("hive.hb.prompt")}
+                      {section === "bee" || section === "proposal" ? " · " + t("hive.hb.promptRequired") : ""}
+                    </span>
                     <textarea
                       className="jyv-qcPromptInput"
                       rows={Math.min(6, Math.max(2, String(row.prompt ?? "").split("\n").length))}
                       value={row.prompt ?? ""}
                       disabled={section === "hive" ? row.summon !== true : section === "floor" ? row.createBee !== true : false}
-                      placeholder={t("hive.hb.promptPlaceholder")}
+                      placeholder={section === "proposal" ? t("hive.hb.proposalPromptPlaceholder") : t("hive.hb.promptPlaceholder")}
+                      title={section === "proposal" ? t("hive.hb.proposalPromptHint") : undefined}
                       onChange={(e) => patchSlot(row.id, { prompt: e.target.value })}
                     />
                   </label>
-                  <label className="jyv-qcAuto" title={t("hive.hb.autoSendHint")}>
+                  {/* 状态置位（提案栏专属，add-proposal-panel 5.6/D4）：受限枚举下拉
+                      「不设置 / 已审阅 / 已执行 / 已暂停」——不设置 = 本卡不改状态。 */}
+                  {section === "proposal" ? (
+                    <label className="jyv-swarmField">
+                      <span>{t("hive.hb.setStatus")}</span>
+                      <select
+                        value={typeof row.setStatus === "string" ? row.setStatus : ""}
+                        onChange={(e) => patchSlot(row.id, { setStatus: e.target.value ? e.target.value : undefined })}
+                      >
+                        <option value="">{t("hive.proposal.status.none")}</option>
+                        {PROPOSAL_STATUSES.map((entry) => (
+                          <option key={entry.id} value={entry.id}>{t("hive.proposal.status." + entry.id)}</option>
+                        ))}
+                      </select>
+                    </label>
+                  ) : null}
+                  <label className="jyv-qcAuto" title={section === "proposal" ? t("hive.hb.proposalAutoSendHint") : t("hive.hb.autoSendHint")}>
                     <input
                       type="checkbox"
                       checked={row.autoSend === true}
@@ -4426,76 +5083,35 @@ function HotbarsModal({ t, hotbars, statusCards, beeTypes, layout, guardRef, onC
                   </label>
                   {section === "hive" && row.summon === true ? <div className="jyv-swarmHint">{t("hive.hb.pureSummonHint")}</div> : null}
                   {section === "hive" && row.summon !== true ? <div className="jyv-swarmHint">{t("hive.hb.summonOffHint")}</div> : null}
+                  {section === "proposal" ? <div className="jyv-swarmHint">{t("hive.hb.proposalSlotHint")}</div> : null}
                 </div>
               ) : null}
             </div>
           ))}
         </div>
         </>
-        )}
         <div className="jyv-qcActions">
-          {section !== "status" ? (
-            <button type="button" className="jyv-qcAdd" disabled={rows.length >= HOTBAR_COLUMN_LIMIT} onClick={addSlot}>+ {t("hive.hb.add")}</button>
+          {section === "bee" ? (
+            /* 蜂栏节「导入快捷功能」（plugin-config-import「导入动作语义」/「导入入口降级」）：
+               仅蜂栏出现（巢栏/地板栏/提案栏 SHALL NOT 出现该入口）；源不可用 → 灰置 + 悬停原因。 */
+            <button
+              type="button"
+              className="jyv-qcAdd jyv-hbImport"
+              disabled={importDisabled}
+              title={String(importHint)}
+              onClick={runImport}
+            >
+              {importing ? t("hive.hb.importBusy") : t("hive.hb.import")}
+            </button>
           ) : null}
+          <button type="button" className="jyv-qcAdd" disabled={rows.length >= HOTBAR_COLUMN_LIMIT} onClick={addSlot}>+ {t("hive.hb.add")}</button>
           {error ? <span className="jyv-qcError" role="alert">{errText}</span> : null}
-          {section !== "status" && overflowSummary > 0 ? <span className="jyv-qcDirty">{t("hive.hb.overflow").replace("{n}", String(overflowSummary))}</span> : null}
-          {dirty && !error && (section !== "status" || overflowSummary === 0) ? <span className="jyv-qcDirty">{t("hive.hb.dirty")}</span> : null}
+          {overflowSummary > 0 ? <span className="jyv-qcDirty">{t("hive.hb.overflow").replace("{n}", String(overflowSummary))}</span> : null}
+          {dirty && !error ? <span className="jyv-qcDirty">{t("hive.hb.dirty")}</span> : null}
           <button type="button" className="jyv-qcSave" disabled={saving} onClick={save}>{saving ? t("hive.qc.saving") : t("hive.qc.save")}</button>
         </div>
       </div>
     </RailModal>
-  );
-}
-
-/* ------------------------------------------------------------------ *
- * 状态卡片节（bee-status-cards D4）：蜂种列表（beeTypes 镜像序 + 默认蜂灰置行）
- * + 选中蜂种展开唯一配置表单（prompt textarea + autoSend + 清除配置）。
- * ------------------------------------------------------------------ */
-function StatusCardsSection({ t, beeTypes, statusDraft, selected, onSelect, onPatch, onClear }) {
-  const rows = [...beeTypes.map((bt) => ({ typeId: bt.id, name: bt.name || bt.id, isDefault: false })), { typeId: "default", name: t("hive.status.default"), isDefault: true }];
-  const sel = selected && !rows.some((r) => r.typeId === selected) ? null : selected;
-  const cfg = sel ? (statusDraft?.[sel] ?? null) : null;
-  return (
-    <div className="jyv-qcRows">
-      {rows.map((row) => (
-        <div
-          key={row.typeId}
-          className={"jyv-qcRow" + (sel === row.typeId ? " jyv-hbRowOn" : "") + (row.isDefault ? " jyv-hbStatusDefaultRow" : "")}
-          onClick={() => { if (!row.isDefault) onSelect(row.typeId); }}
-        >
-          <div className="jyv-qcRowHead">
-            <span className="jyv-hbName">{row.name}</span>
-            {row.isDefault ? <span className="jyv-qcDirty">{t("hive.hb.status.defaultRow")}</span> : null}
-            {cfg && sel === row.typeId ? (
-              <button type="button" className="jyv-qcRemove" title={t("hive.hb.status.clear")} aria-label={t("hive.hb.status.clear")} onClick={(e) => { e.stopPropagation(); onClear(row.typeId); }}>✕</button>
-            ) : null}
-          </div>
-          {sel === row.typeId && !row.isDefault ? (
-            <div className="jyv-hbForm" onClick={(e) => e.stopPropagation()}>
-              <label className="jyv-swarmField">
-                <span>{t("hive.hb.prompt")}</span>
-                <textarea
-                  className="jyv-qcPromptInput"
-                  rows={Math.min(6, Math.max(2, String(cfg?.prompt ?? "").split("\n").length))}
-                  value={cfg?.prompt ?? ""}
-                  placeholder={t("hive.hb.status.promptPlaceholder")}
-                  onChange={(e) => onPatch(row.typeId, { prompt: e.target.value })}
-                />
-              </label>
-              <label className="jyv-qcAuto" title={t("hive.hb.status.autoSendHint")}>
-                <input
-                  type="checkbox"
-                  checked={cfg?.autoSend === true}
-                  onChange={(e) => onPatch(row.typeId, { autoSend: e.target.checked })}
-                />
-                {t("hive.hb.autoSend")}
-              </label>
-              <button type="button" className="jyv-qcDiscard" onClick={() => onClear(row.typeId)}>{t("hive.hb.status.clear")}</button>
-            </div>
-          ) : null}
-        </div>
-      ))}
-    </div>
   );
 }
 
@@ -4702,4 +5318,9 @@ export function apply(ctx) {
 /* 冒烟测试观测面（skill-links exports.appendPrompt / composerBridge 同款先例）：
    只读镜像桥 + 草稿通道（召唤种子/桥回退）+ 道具栏/面板/模态组件引用，供
    bundle 级冒烟直测渲染输出与交互 props；运行时行为不受影响。 */
-export { composerBridge, appendViaBridge, seedSummonDraft, HotbarBar, WorkerPanel, HiveSettingsModal, HotbarsModal, LayoutSettingsBody, BeeSwarmModal, StatusBar, StatusCardsSection };
+/* 冒烟测试观测面（skill-links exports.appendPrompt / composerBridge 同款先例）：
+   只读镜像桥 + 草稿通道（召唤种子/桥回退）+ 道具栏/面板/模态组件引用，供
+   bundle 级冒烟直测渲染输出与交互 props；运行时行为不受影响。
+   `proposalsStore` 一并导出：提案面板冒烟的清单注入点（沙箱无 EventSource/SSE，
+   只能由 store 直接落 fixture——与 hotbars-ui-smoke 直测 store 同款纪律）。 */
+export { composerBridge, appendViaBridge, seedSummonDraft, HotbarBar, WorkerPanel, HiveSettingsModal, HotbarsModal, LayoutSettingsBody, BeeSwarmModal, ProposalPanel, proposalsStore, VoiceDeskPanel, VoiceSettingsBody, createVoiceDesk, assembleDeliveryPrompt };

@@ -376,35 +376,30 @@ div:has(> [data-slot="sidebar.footer.action"]):has(.jyv-seat){flex-wrap:wrap}
 .jyv-combatLog[data-reduced="true"] .jyv-combatRow{animation:none}
 @media (prefers-reduced-motion: reduce){
   .jyv-combatRow{animation:none}
-  .jyv-statusBar{transition:none}
 }
-/* ── 完成状态栏（bee-status-cards D2）：canvasWrap 内左缘垂直居中，max-height
-      滚动；下缘按 --jyv-statusBarBottom（76px 道具栏 + 报告让位 reserve）动态让位。
-      底图透明、无边框（只保留卡片与按钮）；完成信息 ≤0 时整栏向左滑出屏幕外，
-      >0 时从屏幕外向右切入（transform transition 动效）。 ── */
-.jyv-statusBar{position:absolute;left:10px;top:50%;transform:translateY(-50%) translateX(0);z-index:30;display:flex;flex-direction:column;gap:6px;width:158px;max-height:calc(100% - 100px);box-sizing:border-box;padding:6px;pointer-events:auto;bottom:var(--jyv-statusBarBottom,76px);overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:var(--dsw-alias-scrollbar-bg-l2) transparent;transition:transform .28s cubic-bezier(.22,.61,.36,1)}
-.jyv-statusBar[data-hidden="true"]{transform:translateY(-50%) translateX(calc(-100% - 24px));pointer-events:none}
-/* 减动效：reduced 直插到位无滑入动画（CSS 兜底 + prefers-reduced-motion） */
-.jyv-statusBar[data-reduced="true"]{transition:none}
-.jyv-statusCard{position:relative;display:flex;align-items:center;gap:6px;flex:none;box-sizing:border-box;height:32px;padding:0 8px;background:var(--jyv-plate);border:1px solid var(--jyv-brd);border-radius:8px;box-shadow:var(--dsw-shadow-lv2);color:var(--jyv-text);font-size:12px;cursor:pointer;overflow:hidden}
-.jyv-statusCard:hover{color:var(--jyv-text)}
-.jyv-statusName{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
-.jyv-statusCount{flex:none;min-width:18px;text-align:center;font-variant-numeric:tabular-nums;font-weight:600;color:var(--jyv-text-dim)}
-.jyv-statusCountOn{color:var(--dsw-alias-state-success-primary)}
-.jyv-statusSend{flex:none;border:none;background:transparent;color:var(--jyv-accent);font-size:13px;line-height:1;cursor:pointer;padding:4px 6px;border-radius:6px}
-.jyv-statusSend:hover:not(:disabled){background:color-mix(in srgb,var(--jyv-text) 9%,transparent)}
-.jyv-statusSend:disabled{color:var(--jyv-text-dim);cursor:default}
-.jyv-statusDefault{opacity:.72}
-/* 确认弹窗（D5）：轻量遮罩面板，复用 jyv-modal 骨架 */
-.jyv-statusConfirmBack{z-index:1500}
-.jyv-statusConfirm{width:min(420px,92%);height:auto;max-height:70%}
-.jyv-statusConfirmHint{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:1.6;margin-bottom:8px}
-.jyv-statusConfirmLabel{font-size:11px;font-weight:700;color:var(--dsw-alias-state-business-primary);letter-spacing:.06em;margin:6px 2px 4px}
-.jyv-statusConfirmPrompt{white-space:pre-wrap;word-break:break-word;max-height:200px;overflow-y:auto;margin:0;padding:8px 10px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary);font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace}
-.jyv-statusConfirm .jyv-modalHead:last-child{justify-content:flex-end;gap:8px;border-top:1px solid var(--dsw-alias-border-l1);padding-top:8px;margin-top:8px}
-/* 状态卡片节默认蜂灰置行 */
-.jyv-hbStatusDefaultRow{opacity:.6;cursor:default}
-.jyv-hbStatusDefaultRow .jyv-qcRowHead{cursor:default}
+/* ── 提案面板（add-proposal-panel 5.3/D9）：canvasWrap 内左缘垂直居中（原完成状态栏
+      锚点），max-height 滚动；下缘按 --jyv-panelBottom（76px 道具栏 + 作战报告让位
+      reserve）动态让位。组头 + 卡片列表；状态 = 色点 + 本地化名称；头部刷新按钮与
+      空态占位共用同一入口（watcher 降级路径的一等公民）。 ── */
+.jyv-proposalPanel{position:absolute;left:10px;top:50%;transform:translateY(-50%);z-index:30;display:flex;flex-direction:column;gap:6px;width:186px;max-height:calc(100% - 100px);box-sizing:border-box;padding:6px;pointer-events:auto;bottom:var(--jyv-panelBottom,76px);overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:var(--dsw-alias-scrollbar-bg-l2) transparent}
+.jyv-proposalHead{display:flex;align-items:center;gap:6px;flex:none;padding:0 2px 2px}
+.jyv-proposalTitle{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;font-weight:700;letter-spacing:.06em;color:var(--jyv-text-dim)}
+.jyv-proposalRefresh{flex:none;border:none;background:transparent;color:var(--jyv-accent);font-size:13px;line-height:1;cursor:pointer;padding:3px 5px;border-radius:6px}
+.jyv-proposalRefresh:hover:not(:disabled){background:color-mix(in srgb,var(--jyv-text) 9%,transparent)}
+.jyv-proposalRefresh:disabled{color:var(--jyv-text-dim);cursor:default}
+.jyv-proposalGroup{display:flex;flex-direction:column;gap:4px;flex:none}
+.jyv-proposalGroupName{font-size:10px;font-weight:700;color:var(--jyv-text-dim);letter-spacing:.04em;padding:2px 2px 0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.jyv-proposalCard{position:relative;display:flex;align-items:center;gap:6px;flex:none;box-sizing:border-box;height:28px;padding:0 8px;background:var(--jyv-plate);border:1px solid var(--jyv-brd);border-radius:8px;box-shadow:var(--dsw-shadow-lv2);color:var(--jyv-text);font-size:12px;cursor:pointer;overflow:hidden;text-align:left}
+.jyv-proposalCard:hover{color:var(--jyv-text)}
+.jyv-proposalCard[data-on="true"]{border-color:var(--jyv-accent);box-shadow:0 0 0 1px var(--jyv-accent) inset}
+.jyv-proposalName{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
+.jyv-proposalDot{flex:none;width:7px;height:7px;border-radius:99px}
+.jyv-proposalState{flex:none;font-size:10px;font-weight:600;color:var(--jyv-text-dim)}
+.jyv-proposalEmpty{font-size:11px;line-height:1.7;color:var(--jyv-text-dim);padding:2px}
+.jyv-proposalEmptyBtn{border:none;background:transparent;color:var(--jyv-accent);font-size:11px;cursor:pointer;padding:2px 4px;border-radius:6px}
+.jyv-proposalEmptyBtn:hover:not(:disabled){background:color-mix(in srgb,var(--jyv-text) 9%,transparent)}
+/* 编辑器状态置位下拉行（提案栏节） */
+.jyv-hbStatusRow{display:flex;align-items:center;gap:6px}
 /* ── 顶部会话概要条（session-brief-bar 5.2/D4 重设计）：canvasWrap 顶部居中半透明
       只读卡片；pointer-events 限定条体（不遮挡画布手势，条外事件穿透）；栈式布局：
       标题行（accent 圆点 + 加粗，单行省略）→「任务」徽标行（末回合 prompt）→
@@ -429,4 +424,47 @@ div:has(> [data-slot="sidebar.footer.action"]):has(.jyv-seat){flex-wrap:wrap}
 .jyv-tipVal{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-variant-numeric:tabular-nums}
 /* 图例键盘手势提示项（hive-interaction-polish 8.1）：与状态图例同行，弱化色 */
 .jyv-legendKey{color:var(--dsw-alias-label-tertiary)}
+/* ── 语音工作台（add-hive-voice-desk 3.4）：右下角浮层面板；页头 🎙 入口；
+      状态光环（场景内无蜂后化身 → 以页级光环映射 待机/监听/播放/打断）。 ── */
+.jyv-voiceBtn[data-state="not-configured"]{opacity:.55}
+.jyv-voiceDesk{position:absolute;right:12px;bottom:calc(var(--jyv-voiceDeskBottom,12px) + 84px);z-index:60;width:min(360px,42vw);max-height:min(58vh,520px);overflow-y:auto;overscroll-behavior:contain;box-sizing:border-box;padding:10px 11px;border-radius:12px;background:var(--jyv-plate);border:1px solid var(--jyv-brd);box-shadow:var(--dsw-shadow-lv3);color:var(--jyv-text);font-size:12px;line-height:18px;display:flex;flex-direction:column;gap:8px;pointer-events:auto}
+.jyv-voiceHead{display:flex;align-items:center;gap:8px}
+.jyv-voiceTitle{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
+.jyv-voiceState{flex:none;box-sizing:border-box;height:18px;padding:0 8px;border-radius:9px;background:color-mix(in srgb,var(--jyv-accent) 22%,transparent);font-size:11px;line-height:18px;font-weight:600}
+.jyv-voiceState[data-state="speaking"]{background:color-mix(in srgb,var(--dsw-alias-state-success-primary) 26%,transparent)}
+.jyv-voiceState[data-state="paused"]{background:color-mix(in srgb,var(--jyv-text-dim) 26%,transparent)}
+.jyv-voiceRow{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.jyv-voicePtt{flex:1 1 auto;min-width:120px;box-sizing:border-box;height:34px;border-radius:9px;border:1px solid var(--jyv-brd);background:var(--jyv-card);color:var(--jyv-text);font-size:13px;font-weight:600;cursor:pointer;user-select:none;touch-action:none}
+.jyv-voicePtt:hover:not(:disabled){background:var(--jyv-card-hover)}
+.jyv-voicePttOn{background:color-mix(in srgb,var(--jyv-accent) 30%,transparent);border-color:var(--jyv-accent)}
+.jyv-voicePtt:disabled{opacity:.5;cursor:not-allowed}
+.jyv-voiceMini{flex:none;box-sizing:border-box;height:26px;padding:0 10px;border-radius:8px;border:1px solid var(--jyv-brd);background:transparent;color:var(--jyv-text);font-size:12px;cursor:pointer}
+.jyv-voiceMini:hover{background:var(--jyv-card-hover)}
+.jyv-voiceStatus{display:flex;align-items:center;gap:8px;flex-wrap:wrap;color:var(--jyv-text-dim);font-size:11px}
+.jyv-voiceDim{color:var(--jyv-text-dim);font-size:11px;line-height:16px}
+.jyv-voiceErr{color:var(--dsw-alias-state-error-primary);font-size:11px;line-height:16px}
+.jyv-voiceChips{display:flex;flex-direction:column;gap:4px;max-height:150px;overflow-y:auto}
+.jyv-voiceChip{display:flex;align-items:center;gap:6px;box-sizing:border-box;padding:3px 6px;border-radius:8px;background:var(--jyv-card);border:1px solid var(--jyv-brd)}
+.jyv-voiceChip[data-status="pending"]{opacity:.6}
+.jyv-voiceChip[data-status="failed"]{border-color:var(--dsw-alias-state-error-primary)}
+.jyv-voiceChipNo{flex:none;min-width:16px;text-align:center;font-size:10px;font-weight:700;color:var(--jyv-text-dim);font-variant-numeric:tabular-nums}
+.jyv-voiceChipText{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.jyv-voiceChipBtn{flex:none;border:none;background:transparent;color:var(--jyv-accent);font-size:12px;line-height:1;cursor:pointer;padding:3px 5px;border-radius:6px}
+.jyv-voiceChipBtn:hover{background:color-mix(in srgb,var(--jyv-text) 9%,transparent)}
+.jyv-voiceConfirm{display:flex;flex-direction:column;gap:6px;box-sizing:border-box;padding:8px;border-radius:10px;border:1px solid var(--jyv-accent);background:color-mix(in srgb,var(--jyv-accent) 12%,transparent)}
+.jyv-voiceConfirmEcho{font-weight:600;word-break:break-all}
+.jyv-voiceDocs{display:flex;flex-direction:column;gap:4px}
+.jyv-voiceDoc{display:flex;align-items:center;gap:6px}
+.jyv-voiceDocName{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px}
+.jyv-voiceSelect{flex:1;min-width:0;box-sizing:border-box;height:24px;border-radius:7px;border:1px solid var(--jyv-brd);background:var(--jyv-card);color:var(--jyv-text);font-size:12px}
+/* 设置「语音」节的写入式凭据输入（只写不读：值恒空、提交后清空） */
+.jyv-voiceInput{flex:1 1 150px;min-width:110px;box-sizing:border-box;height:24px;padding:0 8px;border-radius:7px;border:1px solid var(--jyv-brd);background:var(--jyv-card);color:var(--jyv-text);font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.jyv-voiceInput::placeholder{color:var(--jyv-text-dim)}
+.jyv-voiceInput:focus{outline:none;border-color:var(--jyv-accent)}
+.jyv-voiceAura{position:absolute;inset:0;z-index:20;pointer-events:none;opacity:0;transition:opacity .3s ease}
+.jyv-voiceAura[data-voice-state="listening"]{opacity:1;box-shadow:inset 0 0 120px 0 color-mix(in srgb,var(--jyv-accent) 26%,transparent);animation:jyvVoiceBreath 2.6s ease-in-out infinite}
+.jyv-voiceAura[data-voice-state="speaking"]{opacity:1;box-shadow:inset 0 0 160px 0 color-mix(in srgb,var(--dsw-alias-state-success-primary) 30%,transparent)}
+.jyv-voiceAura[data-voice-state="paused"]{opacity:1;box-shadow:inset 0 0 120px 0 color-mix(in srgb,var(--jyv-text-dim) 22%,transparent)}
+@keyframes jyvVoiceBreath{0%,100%{opacity:.55}50%{opacity:1}}
+@media (prefers-reduced-motion:reduce){.jyv-voiceAura{animation:none!important}}
 `;

@@ -49,7 +49,7 @@ eq(normalizeBeeTypes(undefined), [], "undefined → 空列表");
 eq(normalizeBeeTypes("x"), [], "字符串 → 空列表");
 
 const list = normalizeBeeTypes([
-  bee("design-bee", "设计蜂", { description: " 设计  ", model: { provider: "deepseek-official", model: "deepseek-v4-pro" }, queuePolicy: "serialized" }),
+  bee("design-bee", "设计蜂", { description: " 设计  ", model: { provider: "deepseek-official", model: "deepseek-v4-pro" }, presetPrompt: "存量行为定义", queuePolicy: "serialized" }),
   { id: "bad-id", name: "" },
   { id: RESERVED_BEE_TYPE_ID, name: "保留字" },
   { id: "dup", name: "A" },
@@ -58,7 +58,10 @@ const list = normalizeBeeTypes([
 ]);
 eq(list.length, 3, "非法条目丢弃、重复 id 去重后剩 3 条");
 eq(list[0].description, "设计", "description trim");
-eq(list[0].model, { provider: "deepseek-official", model: "deepseek-v4-pro" }, "model 形状合法保留");
+/* add-hotbar-llm-model-and-import D1（BREAKING）：蜂种 SHALL NOT 承载 LLM 对话模型与
+   预设提示词——存量文档字段经归一化重建对象静默剥离（无迁移代码、不报错）。 */
+eq("model" in list[0], false, "存量 model 字段归一化剥离（职责分离：LLM 模型归指令卡）");
+eq("presetPrompt" in list[0], false, "存量 presetPrompt 字段归一化剥离（已 REMOVED 需求）");
 eq(list[0].queuePolicy, "serialized", "queuePolicy 保留");
 eq(list[2].queuePolicy, "free", "非法 queuePolicy 回落 free");
 eq(list[2].capabilities.length, 0, "非法 action 的能力丢弃");
@@ -74,8 +77,8 @@ eq(withModels[1].beeModel, undefined, "默认外观省略字段");
 eq(withModels[2].beeModel, undefined, "未知外观模型回落默认");
 codeOf([bee("a", "A", { beeModel: "nope" })], "beeTypes[0].beeModel", "invalidBeeModel", "未知外观模型拒绝");
 
-/* model 缺 reasoningEffort 时不补空串 */
-eq(normalizeBeeTypes([bee("m", "M", { model: { provider: "p", model: "m" } })])[0].model, { provider: "p", model: "m" }, "model 最小形状");
+/* 旧文档剥离口径（幂等）：再喂一遍仍无两字段，其余键序/形状照常 */
+eq(normalizeBeeTypes(list)[0], { id: "design-bee", name: "设计蜂", description: "设计", queuePolicy: "serialized", capabilities: list[0].capabilities }, "归一化幂等（剥离子段不回流）");
 
 /* 上限 16 截断 */
 eq(normalizeBeeTypes(Array.from({ length: 20 }, (_, i) => bee("t" + i, "T" + i))).length, MAX_BEE_TYPES, "超上限截断 16");
@@ -113,7 +116,11 @@ codeOf([bee("default", "A")], "beeTypes[0].id", "reservedId", "保留字 default
 codeOf([bee("Bad Id", "A")], "beeTypes[0].id", "invalidId", "id 形状拒绝");
 codeOf([bee("a", "A"), bee("a", "B")], "beeTypes[1].id", "duplicateId", "id 重复拒绝");
 codeOf([bee("a", "  ")], "beeTypes[0].name", "missingName", "缺名称拒绝（spec 场景）");
-codeOf([bee("a", "A", { model: { provider: "", model: "m" } })], "beeTypes[0].model", "invalidModel", "model 缺 provider 拒绝");
+/* model / presetPrompt 不再是蜂种字段：草稿校验无对应规则（宿主 zod strip 未知键），
+   读取路径归一化剥离——两侧都不接受，字段级错误码 invalidModel / invalidPresetPrompt /
+   presetPromptTooLong 随 D1 一并消失（蜂种域；指令卡模型另有 hive.hb.err.invalidModel）。 */
+eq(validateBeeTypesDraft([bee("a", "A", { model: { provider: "", model: "m" } })]), null, "model 字段不再进入蜂种校验（strip 语义）");
+eq(validateBeeTypesDraft([bee("a", "A", { presetPrompt: 42 })]), null, "presetPrompt 字段不再进入蜂种校验（strip 语义）");
 codeOf([bee("a", "A", { queuePolicy: "fifo" })], "beeTypes[0].queuePolicy", "invalidQueuePolicy", "queuePolicy 枚举外拒绝");
 
 const draft = (capOverrides, beeExtra = {}) => [bee("a", "A", { capabilities: [{ id: "c1", name: "N", trigger: { capture: { A: "proposal" } }, action: { type: "send", promptTemplate: "x {A}" }, ...capOverrides }], ...beeExtra })];

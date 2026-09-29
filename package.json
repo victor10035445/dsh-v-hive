@@ -17,8 +17,11 @@
     "lib/bee-types.mjs",
     "lib/capabilities.mjs",
     "lib/lane.mjs",
-    "lib/status-cards.mjs",
+    "lib/proposals.mjs",
+    "lib/hive-voice.mjs",
+    "lib/plugin-imports.mjs",
     "lib/client.js",
+    "assets/",
     "cordis.patch.yml",
     "README.md",
     "LICENSE"
@@ -33,8 +36,9 @@
   },
   "scripts": {
     "build": "node build.mjs",
-    "check": "node --check lib/index.js && node --check lib/bee-types.mjs && node --check lib/capabilities.mjs && node --check lib/lane.mjs && node --check lib/client.js",
-    "test": "node test/styles-smoke.mjs && node test/hex-smoke.mjs && node test/dock-yield-smoke.mjs && node test/layout-smoke.mjs && node test/bee-model-smoke.mjs && node test/hex-fx-smoke.mjs && node test/drone-visibility-smoke.mjs && node test/watermark-smoke.mjs && node test/walls-smoke.mjs && node test/host-state-smoke.mjs && node test/hotbars-smoke.mjs && node test/hotbars-host-smoke.mjs && node test/status-cards-smoke.mjs && node test/status-cards-host-smoke.mjs && node test/factory-smoke.mjs && node test/composer-bridge-smoke.mjs && node test/hotbars-ui-smoke.mjs && node test/status-cards-ui-smoke.mjs && node test/bee-types-smoke.mjs && node test/bee-types-summon-tool-smoke.mjs && node test/capabilities-smoke.mjs && node test/lane-smoke.mjs && node test/bee-engine-smoke.mjs && node test/render-lod-smoke.mjs && node test/camera-gesture-smoke.mjs && node test/follow-smoke.mjs && node test/keyboard-smoke.mjs && node test/tips-smoke.mjs && node test/links-smoke.mjs && node test/brief-bar-smoke.mjs && node test/summon-tool-smoke.mjs && node test/wait-tool-smoke.mjs && node test/swarm-preset-ui-smoke.mjs && node test/combat-log-smoke.mjs && node --expose-gc test/perf-smoke.mjs"
+    "check": "node --check lib/index.js && node --check lib/bee-types.mjs && node --check lib/capabilities.mjs && node --check lib/lane.mjs && node --check lib/hive-voice.mjs && node --check lib/plugin-imports.mjs && node --check lib/proposals.mjs && node --check lib/client.js",
+    "voice:build": "node scripts/build-voice-assets.mjs",
+    "test": "node test/styles-smoke.mjs && node test/hex-smoke.mjs && node test/dock-yield-smoke.mjs && node test/layout-smoke.mjs && node test/bee-model-smoke.mjs && node test/hex-fx-smoke.mjs && node test/drone-visibility-smoke.mjs && node test/watermark-smoke.mjs && node test/walls-smoke.mjs && node test/host-state-smoke.mjs && node test/hotbars-smoke.mjs && node test/hotbars-host-smoke.mjs && node test/proposals-smoke.mjs && node test/proposals-host-smoke.mjs && node test/factory-smoke.mjs && node test/composer-bridge-smoke.mjs && node test/hotbars-ui-smoke.mjs && node test/proposals-ui-smoke.mjs && node test/model-select-smoke.mjs && node test/plugin-imports-smoke.mjs && node test/plugin-imports-host-smoke.mjs && node test/bee-types-smoke.mjs && node test/bee-types-summon-tool-smoke.mjs && node test/capabilities-smoke.mjs && node test/lane-smoke.mjs && node test/voice-grammar-smoke.mjs && node test/voice-session-smoke.mjs && node test/voice-host-smoke.mjs && node test/voice-ui-smoke.mjs && node test/bee-engine-smoke.mjs && node test/render-lod-smoke.mjs && node test/camera-gesture-smoke.mjs && node test/follow-smoke.mjs && node test/keyboard-smoke.mjs && node test/tips-smoke.mjs && node test/links-smoke.mjs && node test/brief-bar-smoke.mjs && node test/summon-tool-smoke.mjs && node test/wait-tool-smoke.mjs && node test/swarm-preset-ui-smoke.mjs && node test/combat-log-smoke.mjs && node --expose-gc test/perf-smoke.mjs"
   },
   "dependencies": {
     "zod": "^4.1.5"

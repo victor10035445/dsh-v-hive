@@ -1,6 +1,9 @@
 /**
- * 工具等待（hive_wait）冒烟测试（hive-summon-tool 任务 4.3，spec「工具等待」四分支）：
+ * 工具等待（hive_wait）冒烟测试（hive-summon-tool 任务 4.3 + harden-bee-summon-tool
+ * 任务 3.2，spec「工具等待」四分支与正文返回）：
  *  - idle 分支：入口即检（已归静立即 ok / 在等收到归静事件放行）；
+ *  - 正文返回（harden D1）：入口即检快照直读 / idle 放行附带 / 截断置位 /
+ *    代理对不切断 / 缓存缺失省略字段 / ok:false 分支不附带 / 渲染信任框架；
  *  - 琥珀分支：approval 瀑布开始 → 在等等待器立即 waiting-interaction；入口即检；
  *  - 超时分支：timeoutMs 到期 → timeout；
  *  - 消失分支：归档 → session-archived；不存在 → session-not-found；
@@ -11,6 +14,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { apply } from "../src/index.mjs";
+import { BEE_OUTPUT_TRUST_FRAME } from "../src/capabilities.mjs";
 
 const eq = (actual, expected, message) => {
   if (JSON.stringify(actual) !== JSON.stringify(expected)) {
@@ -29,11 +33,15 @@ const effectCleanups = [];
 const listeners = [];
 const agentsById = new Map();
 
-const makeAgent = (id, { status = "running", cwd = "F:/repo" } = {}) => {
+const makeAgent = (id, { status = "running", cwd = "F:/repo", events = null } = {}) => {
   const agent = { id, status, session: { header: { id, cwd } } };
+  if (events) agent.session.snapshotEvents = () => events; // harden D1：注入会话快照（活代理直读面）
   agentsById.set(id, agent);
   return agent;
 };
+
+/** 构造 assistant/message 快照事件（harden D1：末条正文捕获的输入形状）。 */
+const textEvent = (text, seq = 1) => ({ type: "assistant/message", seq, data: { message: { content: [{ type: "text", text }] } } });
 
 const ctxStub = {
   effect(fn) {
@@ -163,6 +171,71 @@ eq(await cancelWait, { ok: false, reason: "aborted" }, "调用方中止 → abor
 /* 中止后再次归静事件不再触及已移除的等待器（无泄漏表现：不抛错） */
 fire("agent/status", { agent: agentsById.get("s-cancel"), status: "idle" });
 ok(true, "中止后事件不触及残留等待器");
+
+/* ── harden D1：归静附正文（finalMessage / finalMessageTruncated / 信任框架） ── */
+
+/* 渲染：附正文 → 信任框架开头；无正文 → 维持纯 JSON 结构化渲染 */
+const framedText = hiveWait.output.render({}, { ok: true, finalMessage: "x" })[0].text;
+ok(framedText.startsWith(BEE_OUTPUT_TRUST_FRAME), "附正文渲染以信任框架开头（蜂正文是数据非指令）");
+ok(framedText.includes('"finalMessage":"x"'), "框架后保留结构化 JSON（机器可读）");
+eq(hiveWait.output.render({}, { ok: true })[0].text, JSON.stringify({ ok: true }), "无正文渲染维持纯 JSON");
+ok(hiveWait.description.includes("~/.dsh/sessions"), "hive_wait 描述带 sessions 根禁令（harden D4）");
+
+/* 入口即检 + 活代理快照直读：多轮会话取末条 */
+const fmAgent = makeAgent("s-final", {
+  status: "idle",
+  events: [textEvent("中间轮次输出", 1), textEvent("最终结论：任务完成", 2)]
+});
+eq(
+  await hiveWait.execute({ sessionId: "s-final" }, execFor()),
+  { ok: true, finalMessage: "最终结论：任务完成" },
+  "入口即检快照直读 → 附末条 assistant 正文（无截断标记字段）"
+);
+
+/* 事件驱动放行附带正文（turn-stopping 捕获 → idle 放行同一缓存） */
+const fmRun = makeAgent("s-final-run", { status: "running", events: [textEvent("运行中正文", 1)] });
+fire("agent/turn-stopping", { agent: fmRun }); // 回合闭合捕获
+fire("agent/status", { agent: fmRun, status: "running" });
+const fmWait = hiveWait.execute({ sessionId: "s-final-run" }, execFor());
+await sleep(10);
+fire("agent/status", { agent: fmRun, status: "idle" });
+eq(await fmWait, { ok: true, finalMessage: "运行中正文" }, "idle 放行 → outcome 附带捕获正文");
+
+/* 超限截断：8_001 码点 → 截至上限并置位 */
+const fmLong = makeAgent("s-final-long", { status: "running", events: [textEvent("a".repeat(8_001), 1)] });
+fire("agent/status", { agent: fmLong, status: "running" });
+const fmLongWait = hiveWait.execute({ sessionId: "s-final-long" }, execFor());
+await sleep(10);
+fire("agent/status", { agent: fmLong, status: "idle" });
+const fmLongOut = await fmLongWait;
+eq(fmLongOut.finalMessage.length, 8_000, "超限正文截断至 8_000 code points");
+eq(fmLongOut.finalMessageTruncated, true, "截断显式置位");
+
+/* 代理对不切断：7_999 a + 👍 + 5 b = 8_005 码点 → 截断保留完整 emoji */
+const fmPair = makeAgent("s-final-pair", {
+  status: "running",
+  events: [textEvent("a".repeat(7_999) + "👍" + "b".repeat(5), 1)]
+});
+fire("agent/status", { agent: fmPair, status: "running" });
+const fmPairWait = hiveWait.execute({ sessionId: "s-final-pair" }, execFor());
+await sleep(10);
+fire("agent/status", { agent: fmPair, status: "idle" });
+const fmPairOut = await fmPairWait;
+eq(fmPairOut.finalMessage, "a".repeat(7_999) + "👍", "SHALL NOT 切断代理对（emoji 整体保留）");
+eq(fmPairOut.finalMessageTruncated, true, "代理对场景同样显式置位");
+
+/* 空快照会话 → 字段省略（{ok:true} 契约不变；上文各分支已覆盖缓存缺项路径） */
+const fmEmpty = makeAgent("s-final-empty", { status: "idle", events: [] });
+eq(await hiveWait.execute({ sessionId: "s-final-empty" }, execFor()), { ok: true }, "快照无 assistant 消息 → 省略正文字段");
+
+/* ok:false 分支 SHALL NOT 附带缓存正文（即使该会话此前已捕获过） */
+const fmAgain = makeAgent("s-final-again", { status: "idle", events: [textEvent("第一轮正文", 1)] });
+fire("agent/status", { agent: fmAgain, status: "idle" });
+eq(await hiveWait.execute({ sessionId: "s-final-again" }, execFor()), { ok: true, finalMessage: "第一轮正文" }, "首轮入口即检附正文");
+fmAgain.status = "running";
+fire("agent/status", { agent: fmAgain, status: "running" });
+const [againOut] = await Promise.all([hiveWait.execute({ sessionId: "s-final-again", timeoutMs: 30 }, execFor()), sleep(80)]);
+eq(againOut, { ok: false, reason: "timeout" }, "超时分支不附正文（缓存正文不外溢到 ok:false）");
 
 /* ── 插件卸载清理：effect disposer 放行全部在等等待器（SHALL NOT 泄漏） ── */
 makeAgent("s-unload", { status: "running" });

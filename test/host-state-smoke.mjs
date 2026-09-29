@@ -44,27 +44,34 @@ ok(storagePath({ DSH_HOME: "F:/custom-home" }).startsWith("F:\\custom-home") || 
 eq(storagePath({ DSH_HOME: "   " }).split("storages").length, 2, "空白 DSH_HOME 视为未设");
 ok(storagePath({}).toLowerCase().includes(".dsh") || storagePath({}).includes("dsh"), "默认 ~/.dsh");
 
-/* ── statusCards（bee-status-cards 2.3）：读路径宽松归一化 ── */
-/* 合法键 + 悬空键（形状合法但指向已删蜂种）+ 空白 prompt（清除语义）→ 归一化 */
+/* ── statusCards 字段已拆除（add-proposal-panel 4.5：语义反转）──
+   旧断言为「读路径宽松归一化（悬空键丢弃 / trim 落库 / 空白清除）」；
+   add-proposal-panel 全拆 bee-status-cards 后 docSchema 去键 → zod **strict 剥离**，
+   既不归一化也不整档重建：revision 保留、其余字段无损（commands 字段同款先例）。 */
 const scParsed = parseStoredDoc(
   JSON.stringify({
     ...good,
     beeTypes: [{ id: "bt-1", name: "设计蜂", capabilities: [] }],
     statusCards: {
       "bt-1": { prompt: "  汇报  ", autoSend: true },
-      "bt-gone": { prompt: "悬空键", autoSend: false },
-      "bt-blank": { prompt: "  ", autoSend: true }
+      "bt-gone": { prompt: "悬空键", autoSend: false }
     }
   })
 );
-eq(scParsed.statusCards["bt-1"], { prompt: "汇报", autoSend: true }, "statusCards 合法键 trim 落库");
-eq(scParsed.statusCards["bt-gone"] ?? null, null, "悬空键丢弃（指向已删蜂种）");
-eq(scParsed.statusCards["bt-blank"] ?? null, null, "空白 prompt 清除（丢弃）");
-/* 旧文档无 statusCards → 空配置 */
-eq(parseStoredDoc(JSON.stringify(good)).statusCards ?? null, null, "旧文档（无 statusCards）→ 空配置");
-/* 非法 statusCards（值形状非法，如字符串/数组）→ 整档重建默认（沿用 hotbars 同等严格度） */
-eq(parseStoredDoc(JSON.stringify({ ...good, statusCards: { "bt-1": "not-object" } })).revision, 0, "statusCards 值形状非法 → 文档重建");
-eq(parseStoredDoc(JSON.stringify({ ...good, statusCards: [] })).revision, 0, "statusCards 数组 → 文档重建");
+eq(scParsed.statusCards ?? null, null, "旧档 statusCards 读取即剥离（docSchema 已去键，不做归一化）");
+eq(scParsed.revision, 3, "剥离 statusCards **不**触发整档重建（语义反转：旧断言为重建后 revision 0）");
+eq(scParsed.positions["ws-1"], { q: 4, r: -2 }, "剥离后其余字段无损（positions 保留）");
+eq(scParsed.beeTypes[0].id, "bt-1", "同档 beeTypes 照常归一化落库（剥离只作用于已拆字段）");
+/* 旧文档无 statusCards → 字段缺席（与旧口径一致，但现在是「永不出现」） */
+eq(parseStoredDoc(JSON.stringify(good)).statusCards ?? null, null, "旧文档（无 statusCards）→ 字段缺席");
+/* 值形状非法也不再整档重建：整键被 strict 剥离（去键后无形状约束可言） */
+eq(parseStoredDoc(JSON.stringify({ ...good, statusCards: { "bt-1": "not-object" } })).revision, 3, "statusCards 值形状非法 → 整键剥离（不再整档重建）");
+eq(parseStoredDoc(JSON.stringify({ ...good, statusCards: [] })).revision, 3, "statusCards 数组 → 整键剥离（不再整档重建）");
+/* 幂等：再读一次结果逐字相同（下次保存即落盘剥离后的形态） */
+{
+  const once = parseStoredDoc(JSON.stringify({ ...good, statusCards: { "bt-1": { prompt: "x", autoSend: true } } }));
+  eq(parseStoredDoc(JSON.stringify(once)), once, "剥离幂等（再读结果一致）");
+}
 
 /* ════ summonEdges（hive-interaction-polish 2.1/2.3/2.4）：归一化 + 失效剪除 + 兼容 ════ */
 
@@ -157,5 +164,46 @@ eq(dirtyEdges["s-ok"], { parentId: "s-p", at: 1 }, "合法条目原样保留");
   /* 全部失效 → undefined（宿主写入口摘除整键） */
   eq(normalizeSummonEdges({ "s-x": { parentId: "s-y", at: 1 } }, scope) ?? null, null, "全部失效 → undefined");
 }
+
+/* ════ add-hotbar-llm-model-and-import 任务 1.5：存量文档的蜂种字段剥离 ════ */
+
+/* 存量文档同时含蜂种 model/presetPrompt（已删字段）与指令卡 prompt/model（新字段）：
+   读取路径按条目类型分别处置——蜂种两字段静默剥离，指令卡 model 原样保留，
+   其余配置（外观模型/排队策略/能力/位置/镜头）无损，version 保持 1（无迁移）。 */
+const legacyMixed = parseStoredDoc(
+  JSON.stringify({
+    ...good,
+    beeTypes: [
+      {
+        id: "bt-legacy",
+        name: "存量蜂",
+        model: { provider: "deepseek-official", model: "deepseek-v4-pro" },
+        presetPrompt: "先读技能全路径并遵循。",
+        beeModel: "purple_worker",
+        queuePolicy: "serialized",
+        capabilities: [{ id: "c1", name: "交接", trigger: {}, action: { type: "notify" }, once: true }]
+      }
+    ],
+    hotbars: {
+      hive: [{ id: "h1", name: "召唤卡", summon: true, beeTypeId: "bt-legacy", model: { provider: "p", model: "m", reasoningEffort: "max" }, prompt: "开工", autoSend: true }],
+      bee: [{ id: "b1", name: "蜂指令", model: { provider: "p2", model: "m2" }, prompt: "跑测试", autoSend: true }],
+      floor: []
+    }
+  })
+);
+eq(legacyMixed.version, 1, "version 保持 1（SHALL NOT 触发迁移）");
+eq(legacyMixed.revision, 3, "文档未被重建（其余字段无损）");
+eq(legacyMixed.positions["ws-1"].q, 4, "positions 无损");
+eq(legacyMixed.camera.dist, 30, "camera 无损");
+eq("model" in legacyMixed.beeTypes[0], false, "蜂种存量 model 读取即剥离");
+eq("presetPrompt" in legacyMixed.beeTypes[0], false, "蜂种存量 presetPrompt 读取即剥离");
+eq(legacyMixed.beeTypes[0].beeModel, "purple_worker", "蜂种 3D 外观模型保留");
+eq(legacyMixed.beeTypes[0].queuePolicy, "serialized", "蜂种排队策略保留");
+eq(legacyMixed.beeTypes[0].capabilities.length, 1, "蜂种能力配置保留");
+eq(legacyMixed.hotbars.hive[0].model, { provider: "p", model: "m", reasoningEffort: "max" }, "指令卡 model 原样保留（剥离只作用于蜂种条目）");
+eq(legacyMixed.hotbars.hive[0].prompt, "开工", "指令卡提示词保留");
+eq(legacyMixed.hotbars.bee[0].model, { provider: "p2", model: "m2" }, "蜂栏卡 model 保留");
+/* 幂等：再读一次结果逐字相同（下次保存即落盘剥离后的形态） */
+eq(parseStoredDoc(JSON.stringify(legacyMixed)), legacyMixed, "剥离幂等（再读结果一致）");
 
 console.log("ALL HOST-STATE SMOKE TESTS PASSED");

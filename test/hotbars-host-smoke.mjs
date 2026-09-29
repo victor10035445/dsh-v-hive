@@ -3,7 +3,8 @@
  *  - 布局文档 schema：hotbars 三栏合法/非法（strict 按栏裁剪、唯一性、上限 32、
  *    提示词字段联动）、旧文档无 hotbars 兼容、PUT 缺省沿用、commands 残留剥离；
  *  - POST /summon：autoSend 两分支、蜂种/工作区缺失 404（字段级）、workspaceId
- *    缺失 400、空白 prompt 纯召唤（不投递）、模型降级 notify、serialized 蜂种
+ *    缺失 400、空白 prompt 纯召唤（不投递）、卡片模型链路（合法 model → selectModel
+ *    生效；形状非法 → 400 且不创建会话；选型失败 → 降级 notify）、serialized 蜂种
  *    绕车道直投（3.3）。
  * 运行：node test/hotbars-host-smoke.mjs
  */
@@ -34,14 +35,16 @@ const withHotbars = parseStoredDoc(
   JSON.stringify({
     ...baseDoc,
     hotbars: {
-      hive: [hiveSlot("h1", "巢召唤", { beeTypeId: "bt-1", prompt: "开工", autoSend: true })],
+      hive: [hiveSlot("h1", "巢召唤", { beeTypeId: "bt-1", model: { provider: "p", model: "m" }, prompt: "开工", autoSend: true })],
       bee: [beeSlot("b1", "蜂指令")],
-      floor: [floorSlot("f1", "建巢", { prompt: "新巢" })]
+      floor: [floorSlot("f1", "建巢", { prompt: "新巢", model: { provider: "p2", model: "m2", reasoningEffort: "high" } })]
     }
   })
 );
 eq(withHotbars.hotbars.hive.length, 1, "合法 hotbars 保留");
 eq(withHotbars.hotbars.hive[0].name, "巢召唤", "name trim 落库");
+eq(withHotbars.hotbars.hive[0].model, { provider: "p", model: "m" }, "槽位 model 形状保留（三栏全开，optional）");
+eq(withHotbars.hotbars.floor[0].model, { provider: "p2", model: "m2", reasoningEffort: "high" }, "model 含档位保留");
 eq(withHotbars.hotbars.bee.length, 1, "蜂栏保留");
 eq(withHotbars.hotbars.floor[0].prompt, "新巢", "地板栏建蜂开启 → prompt 保留");
 
@@ -62,7 +65,12 @@ const invalidDocs = [
   { ...baseDoc, hotbars: { hive: [], bee: [{ id: "b1", name: "x", prompt: "p", autoSend: false, summon: true }], floor: [] } }, // 蜂栏禁字段
   { ...baseDoc, hotbars: { hive: [], bee: [], floor: [{ id: "f1", name: "x", summon: true, autoSend: false }] } }, // 地板栏禁字段
   { ...baseDoc, hotbars: { hive: [hiveSlot("h1", "x", { summon: false, prompt: "关着还带提示词" })], bee: [], floor: [] } }, // 召唤关 + prompt 非空（联动拒绝）
-  { ...baseDoc, hotbars: { hive: Array.from({ length: 33 }, (_, i) => hiveSlot("id" + i, "n" + i)), bee: [], floor: [] } } // 上限 32
+  { ...baseDoc, hotbars: { hive: Array.from({ length: 33 }, (_, i) => hiveSlot("id" + i, "n" + i)), bee: [], floor: [] } }, // 上限 32
+  /* add-hotbar-llm-model-and-import：槽位 model 形状非法（strict zod + llmModelSchema） */
+  { ...baseDoc, hotbars: { hive: [hiveSlot("h1", "x", { model: "p/m" })], bee: [], floor: [] } }, // 非对象
+  { ...baseDoc, hotbars: { hive: [hiveSlot("h1", "x", { model: { model: "m" } })], bee: [], floor: [] } }, // 缺 provider
+  { ...baseDoc, hotbars: { hive: [hiveSlot("h1", "x", { model: { provider: "p", model: "" } })], bee: [], floor: [] } }, // model 空串
+  { ...baseDoc, hotbars: { hive: [], bee: [{ id: "b1", name: "x", prompt: "p", autoSend: false, model: { provider: "p", model: "m", reasoningEffort: 5 } }], floor: [] } } // 档位非字符串
 ];
 for (const [i, doc] of invalidDocs.entries()) {
   if (i === 6) continue; // 合法对照跳过
@@ -198,14 +206,30 @@ const put5 = await callRoute("PUT", "/api/dsh-hive/state", {
 });
 eq(put5.status, 400, "trim 重名 → 400");
 
+/* PUT 槽位 model（add-hotbar-llm-model-and-import：写入严格、读取宽松分侧，R6） */
+const putModelOk = await callRoute("PUT", "/api/dsh-hive/state", {
+  revision: 3,
+  hotbars: { hive: [hiveSlot("h1", "带模型", { model: { provider: "p", model: "m", reasoningEffort: "high" } })], bee: [], floor: [] }
+});
+eq(putModelOk.status, 200, "合法槽位 model → 200");
+eq(putModelOk.body.doc.hotbars.hive[0].model, { provider: "p", model: "m", reasoningEffort: "high" }, "model 随文档落盘（version 1 不变）");
+eq(putModelOk.body.doc.version, 1, "文档 version 保持 1（optional 字段，无迁移）");
+const putModelBad = await callRoute("PUT", "/api/dsh-hive/state", {
+  revision: putModelOk.body.doc.revision,
+  hotbars: { hive: [hiveSlot("h1", "坏模型", { model: { provider: "p" } })], bee: [], floor: [] }
+});
+eq(putModelBad.status, 400, "槽位 model 缺 model 键 → 400");
+ok(putModelBad.body.issues?.some((p) => String(p).includes("hotbars.hive.0.model")), "400 字段级路径（issues[].path 既有口径）");
+
 const st1 = await callRoute("GET", "/api/dsh-hive/state");
 eq(st1.body.doc.hotbars.hive.length, 1, "非法提交后文档不变更");
 
-/* PUT 蜂种（serialized + 模型配置，供 summon 蜂种分支使用） */
+/* PUT 蜂种（serialized，供 summon 蜂种分支使用；模型配置已随职责分离移除——
+   LLM 模型来源 = 请求体/卡片，蜂种不再承载）。revision = 4（槽位 model 写入后的当前值）。 */
 await callRoute("PUT", "/api/dsh-hive/state", {
-  revision: 3,
+  revision: putModelOk.body.doc.revision,
   beeTypes: [
-    { id: "bt-design", name: "设计蜂", queuePolicy: "serialized", model: { provider: "p", model: "m" }, capabilities: [] }
+    { id: "bt-design", name: "设计蜂", queuePolicy: "serialized", capabilities: [] }
   ]
 });
 
@@ -216,7 +240,7 @@ const put6 = await callRoute("PUT", "/api/dsh-hive/state", {
   hotbars: { hive: [hiveSlot("h9", "另一页签")], bee: [], floor: [] }
 });
 eq(put6.status, 409, "stale revision → 409");
-eq(put6.body.doc.revision, 4, "409 携带最新文档（含蜂种写入后的 revision）");
+eq(put6.body.doc.revision, 5, "409 携带最新文档（含蜂种写入后的 revision）");
 sseRes.writes.length = 0;
 const put7 = await callRoute("PUT", "/api/dsh-hive/state", {
   revision: put6.body.doc.revision,
@@ -249,25 +273,59 @@ eq(sum2.status, 200, "召唤审查 → 200");
 ok(typeof sum2.body.sessionId === "string", "审查分支返 sessionId");
 eq(promptCalls.length, 1, "autoSend 假 → 不投递");
 
-/* 蜂种绑定：带 beeTypeId → beeAssignments 落盘 + selectModel 失败降级 notify */
-sseRes.writes.length = 0;
-selectModelShouldFail = true;
-const sum3 = await callRoute("POST", "/api/dsh-hive/summon", { workspaceId: "ws-1", beeTypeId: "bt-design", prompt: "开工", autoSend: true });
-selectModelShouldFail = false;
-eq(sum3.status, 200, "蜂种召唤（selectModel 失败）→ 200");
-eq(promptCalls.length, 2, "模型降级不阻断投递");
-frame = lastFrame();
-ok(frame && frame.type === "bee-engine", "broadcastEngine 帧已发");
-const notices = frame.sessions?.[sum3.body.sessionId]?.notices ?? [];
-ok(notices.some((n) => String(n.text).includes("模型不可用")), "模型降级 → notify 兜底");
+/* 蜂种绑定落盘 + 卡片模型链路（D3/R2：本路由内联落点，不调用 executeSummon） */
+const createdBeforeModel = createdFrom.length;
+selectModelCalls.length = 0;
+const sum3 = await callRoute("POST", "/api/dsh-hive/summon", {
+  workspaceId: "ws-1",
+  beeTypeId: "bt-design",
+  model: { provider: "p-cat", model: "m-cat", reasoningEffort: "max" },
+  prompt: "开工",
+  autoSend: true
+});
+eq(sum3.status, 200, "卡片模型召唤 → 200");
+eq(selectModelCalls.length, 1, "携带合法 model → selectModel 生效（卡片模型链路）");
+eq(selectModelCalls[0].provider, "p-cat", "selectModel provider = 卡片模型");
+eq(selectModelCalls[0].model, "m-cat", "selectModel model = 卡片模型");
+eq(selectModelCalls[0].reasoningEffort, "max", "selectModel reasoningEffort 透传");
+eq(selectModelCalls[0].sessionId, sum3.body.sessionId, "selectModel 作用于新蜂会话");
+eq(promptCalls.length, 2, "模型设定照常投递首条消息");
 const st2 = await callRoute("GET", "/api/dsh-hive/state");
 eq(st2.body.doc.beeAssignments?.[sum3.body.sessionId], "bt-design", "beeAssignments 绑定落盘");
 
+/* 选型失败降级：不阻断召唤，新蜂卡面 notice（既有用户可见面） */
+sseRes.writes.length = 0;
+selectModelShouldFail = true;
+const sum3b = await callRoute("POST", "/api/dsh-hive/summon", { workspaceId: "ws-1", model: { provider: "p-gone", model: "m-gone" }, prompt: "开工", autoSend: true });
+selectModelShouldFail = false;
+eq(sum3b.status, 200, "selectModel 失败 → 200（召唤 SHALL NOT 失败）");
+eq(promptCalls.length, 3, "模型降级不阻断投递");
+frame = lastFrame();
+ok(frame && frame.type === "bee-engine", "broadcastEngine 帧已发");
+const notices = frame.sessions?.[sum3b.body.sessionId]?.notices ?? [];
+ok(notices.some((n) => String(n.text).includes("模型不可用")), "模型降级 → notify 兜底");
+
+/* 形状非法 model → 400 字段级原因，且不创建会话（spec 场景「模型形状非法拒绝」） */
+const createdBeforeBadModel = createdFrom.length;
+const sumBadModel = await callRoute("POST", "/api/dsh-hive/summon", { workspaceId: "ws-1", model: { model: "m" }, prompt: "x", autoSend: true });
+eq(sumBadModel.status, 400, "缺 provider 的 model → 400");
+ok(sumBadModel.body.issues?.some((p) => String(p).includes("model")), "400 返回字段级路径（model）");
+const sumBadModel2 = await callRoute("POST", "/api/dsh-hive/summon", { workspaceId: "ws-1", model: "p/m", prompt: "x", autoSend: true });
+eq(sumBadModel2.status, 400, "非对象 model → 400");
+eq(createdFrom.length, createdBeforeBadModel, "model 非法不创建会话");
+eq(createdBeforeModel + 2, createdFrom.length, "合法/降级两条召唤各创建一次（拒绝路径无半成品）");
+
+/* 未绑定 model → 不 selectModel（缺省 = 部署默认，与模型功能上线前同行为） */
+selectModelCalls.length = 0;
+const sum3c = await callRoute("POST", "/api/dsh-hive/summon", { workspaceId: "ws-1", beeTypeId: "bt-design", prompt: "无模型", autoSend: true });
+eq(sum3c.status, 200, "未绑定 model 的召唤 → 200");
+eq(selectModelCalls.length, 0, "未绑定 model → 不产生模型请求（部署默认语义）");
+
 /* serialized 蜂种占道也不排队（3.3 绕车道）：蜂种已配 serialized，prompt 仍立即直调 */
-eq(promptCalls.length, 2, "前置： serialized 蜂种在册");
+eq(promptCalls.length, 4, "前置： serialized 蜂种在册");
 const sum4 = await callRoute("POST", "/api/dsh-hive/summon", { workspaceId: "ws-2", beeTypeId: "bt-design", prompt: "不排队", autoSend: true });
 eq(sum4.status, 200, "serialized 蜂种召唤 → 200");
-eq(promptCalls.length, 3, "显式召唤绕车道：立即投递，SHALL NOT 进 FIFO");
+eq(promptCalls.length, 5, "显式召唤绕车道：立即投递，SHALL NOT 进 FIFO");
 
 /* 校验拒绝：蜂种缺失 404（不创建）、工作区未知 404、workspaceId 缺失 400 */
 const createdBefore = createdFrom.length;
@@ -284,9 +342,9 @@ eq(createdFrom.length, createdBefore, "拒绝路径不创建会话（无半成�
 /* 纯召唤：空白 prompt → 放行创建、仅跳过投递（autoSend 真假同义） */
 const sum8 = await callRoute("POST", "/api/dsh-hive/summon", { workspaceId: "ws-1", prompt: "   \n  ", autoSend: true });
 eq(sum8.status, 200, "空白 prompt 纯召唤 → 200（放行创建）");
-eq(promptCalls.length, 3, "纯召唤 → 不投递");
+eq(promptCalls.length, 5, "纯召唤 → 不投递");
 const sum9 = await callRoute("POST", "/api/dsh-hive/summon", { workspaceId: "ws-1", prompt: "", autoSend: false });
 eq(sum9.status, 200, "空白 prompt + autoSend 假 → 200");
-eq(promptCalls.length, 3, "两个 autoSend 分支对空白 prompt 同义（只建不发）");
+eq(promptCalls.length, 5, "两个 autoSend 分支对空白 prompt 同义（只建不发）");
 
 console.log("ALL HOTBARS HOST SMOKE TESTS PASSED");

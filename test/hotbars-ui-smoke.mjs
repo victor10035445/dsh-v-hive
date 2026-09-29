@@ -62,10 +62,13 @@ const jsxRuntime = {
   jsxDEV: (type, props) => ({ type, props })
 };
 
-/* ── mock fetch：/state GET 供控制器启动拉取；PUT 演练 409 重放 ── */
+/* ── mock fetch：/state GET 供控制器启动拉取；PUT 演练 409 重放 ──
+   导入端点（add-hotbar-llm-model-and-import）：由 `importResponder` 逐段改写三态
+   （可用 / available:false / 404 旧宿主 / 网络错），默认 404 = 宿主旧版无该路由。 */
 const fetchCalls = [];
 let putCount = 0;
 let putConflictFirst = true;
+let importResponder = null; // (respond) => ({ok, status, json}) | throw
 async function fetchStub(url, opts = {}) {
   const method = opts.method ?? "GET";
   fetchCalls.push({ url, method, body: opts.body ? JSON.parse(opts.body) : null });
@@ -80,6 +83,10 @@ async function fetchStub(url, opts = {}) {
     }
     const doc = { version: 1, revision: 7, positions: {}, camera: null, ...fetchCalls[fetchCalls.length - 1].body };
     return respond(200, { doc });
+  }
+  if (url === "/api/dsh-hive/imports/skill-links-buttons") {
+    if (importResponder) return importResponder(respond);
+    return respond(404, { error: "unknown route" });
   }
   return respond(404, { error: "unknown route" });
 }
@@ -472,7 +479,8 @@ eq(collect(panelPreviewMissing, (n) => n.tag === "img").length, 0, "组合键未
 const guardRef = { current: null };
 const settingsModal = render(HiveSettingsModal({ t, settings: { layout: layout0 }, setSettings: () => {}, guardRef, onClose: () => {} }));
 const railTabs = collect(settingsModal, (n) => n.props?.id && String(n.props.id).startsWith("jyv-railTab-"));
-eq(railTabs.map((n) => n.props.id), ["jyv-railTab-scene", "jyv-railTab-appearance", "jyv-railTab-layout"], "设置左纵排：场景/外观/布局三节 nav");
+/* 左纵排四节（add-hive-voice-desk 起追加「语音」节：spec dsh-hive「设置面板框架」修订） */
+eq(railTabs.map((n) => n.props.id), ["jyv-railTab-scene", "jyv-railTab-appearance", "jyv-railTab-layout", "jyv-railTab-voice"], "设置左纵排：场景/外观/布局/语音四节 nav");
 ok(typeof guardRef.current === "function", "设置模态守卫已注册（guardRef.current）");
 ok(String(collect(settingsModal, (n) => String(n.props.className ?? "").includes("jyv-railNav")).at(0)?.props["aria-orientation"]) === "vertical", "nav rail 纵向（tablist 上下键语义）");
 /* 布局节滑杆 onChange → setSettings（即时生效路径） */
@@ -504,7 +512,7 @@ const hbModal = render(
   })
 );
 const hbTabs = collect(hbModal, (n) => n.props?.id && String(n.props.id).startsWith("jyv-railTab-"));
-eq(hbTabs.map((n) => n.props.id), ["jyv-railTab-hive", "jyv-railTab-bee", "jyv-railTab-floor", "jyv-railTab-status"], "指令编辑左纵排：巢栏/蜂栏/地板栏/状态卡片四节");
+eq(hbTabs.map((n) => n.props.id), ["jyv-railTab-hive", "jyv-railTab-bee", "jyv-railTab-floor", "jyv-railTab-proposal"], "指令编辑左纵排：巢栏/蜂栏/地板栏/提案栏四节（第四节随 add-proposal-panel 由「状态卡片」换为「提案栏」）");
 ok(textOf(hbModal).includes("hive.hb.empty"), "空配置 → 空态文案");
 hbGuardRef.current();
 ok(hbClosed, "干净草稿 → 守卫直接关闭（脏草稿走离开提醒，模态栈同层按打开序消费）");
@@ -529,6 +537,241 @@ const options = collect(hbModal2, (n) => n.tag === "option").map((o) => o.props.
 ok(options.includes("bt-design") && options.includes(""), "蜂种下拉含默认蜂项 + beeTypes 镜像（跟随蜂群编辑实时更新）");
 const prompts = collect(hbModal2, (n) => n.tag === "textarea");
 eq(prompts.length, 1, "选中行展开提示词编辑表单");
+
+/* ══ 5b. 指令编辑：模型/档位下拉（add-hotbar-llm-model-and-import 5.5 / spec hotbar-card-model） ══ */
+
+const zhDict = localeCaptures.find((c) => c.dict?.zh)?.dict.zh ?? {};
+const tZh = (key) => (typeof zhDict[key] === "string" ? zhDict[key] : key); // 真实中文词典（汇报模板与文案断言）
+const L = (key) => tZh(key); // 界面标签文本（断言用；t 已本地化，不再是裸键）
+const catalogFixture = {
+  groups: [
+    {
+      id: "p-a",
+      name: "A 家",
+      models: [
+        { id: "glm-5.3-flash", name: "GLM 5.3 Flash", reasoning: { efforts: [{ id: "low", name: "低" }, { id: "high", name: "高" }], defaultEffort: "low" } },
+        { id: "plain", name: "Plain" },
+        { id: "org/sub", name: "带斜杠" }
+      ]
+    }
+  ]
+};
+const beeSlotProps = (over = {}) => ({
+  t: tZh,
+  hotbars: { hive: [], bee: [{ id: "b1", name: "蜂指令", prompt: "跑测试", autoSend: false }], floor: [] },
+  beeTypes: [{ id: "bt-design", name: beeTypeName }],
+  layout: { barM: 8, barN: 1 },
+  guardRef: { current: null },
+  onClose: () => {},
+  onSave: async () => ({ ok: true }),
+  onNotify: () => {},
+  modelCatalog: catalogFixture,
+  modelState: "ready",
+  ...over
+});
+/* 渲染助手：进入蜂栏节 → 展开选中槽位（多遍渲染复用同一组 hook 胞元） */
+const pass = (props) => {
+  hookIndex = 0; // 每遍渲染从第一个 hook 胞元开始（与既有断言同款纪律）
+  return render(HotbarsModal(props));
+};
+const openBeeForm = (props) => {
+  hookCells = []; hookIndex = 0;
+  pass(props);
+  collect(pass(props), (n) => n.props?.id === "jyv-railTab-bee")[0].props.onClick(); // 切到蜂栏节
+  collect(pass(props), (n) => String(n.props.className ?? "").includes("jyv-qcRow") && typeof n.props.onClick === "function")[0].props.onClick(); // 展开表单
+  return pass(props);
+};
+const fieldOf = (tree, labelText) => {
+  const label = collect(tree, (n) => n.tag === "label" && String(n.props.className ?? "").includes("jyv-swarmField") && textOf(n).includes(labelText));
+  return label.length ? label[0] : null;
+};
+const selectOf = (tree, labelText) => {
+  const label = fieldOf(tree, labelText);
+  return label ? collect(label, (n) => n.tag === "select")[0] : null;
+};
+
+/* 模型下拉：空键首项 + 每模型一项（不按档位展平）+ 值轨道 */
+let formTree = openBeeForm(beeSlotProps());
+const modelSelect = selectOf(formTree, L("hive.hb.model"));
+ok(modelSelect, "蜂栏槽位展开表单含「LLM 模型」下拉（5.1）");
+eq(modelSelect.props.value, "", "未绑定 → 受控 value = 空键（使用默认模型）");
+eq(collect(modelSelect, (n) => n.tag === "option").map((o) => o.props.value), ["", "p-a/glm-5.3-flash", "p-a/plain", "p-a/org/sub"], "模型下拉：空键首项 + 每模型一项（两维键，不按档位展平）");
+eq(textOf(collect(modelSelect, (n) => n.tag === "option")[0]), "使用默认模型", "首项文案 = 保留词条 hive.swarm.modelNone");
+ok(!collect(modelSelect, (n) => n.tag === "option").some((o) => /低|高/.test(textOf(o))), "模型下拉 SHALL NOT 出现档位名（档位归独立控件）");
+eq(selectOf(formTree, L("hive.hb.effort")), null, "未绑定模型 → 档位下拉整控件不渲染");
+
+/* 选择模型 → 即时显示；档位控件联动出现（预选首项「模型默认档位」） */
+modelSelect.props.onChange({ target: { value: "p-a/glm-5.3-flash" } });
+hookIndex = 0;
+formTree = render(HotbarsModal(beeSlotProps()));
+eq(selectOf(formTree, L("hive.hb.model")).props.value, "p-a/glm-5.3-flash", "选择后受控 value 精确命中（值轨道同源，不弹回默认）");
+const effortSelect = selectOf(formTree, L("hive.hb.effort"));
+ok(effortSelect, "所选模型暴露 reasoning.efforts → 档位下拉渲染");
+eq(collect(effortSelect, (n) => n.tag === "option").map((o) => o.props.value), ["", "low", "high"], "档位项 = 首项空键 + efforts（defaultEffort 不额外产项 → 无重键）");
+eq(effortSelect.props.value, "", "预选 = 首项「模型默认档位」（尚未绑定档位）");
+
+/* 选定档位 → 回显；换到无 efforts 的模型 → 档位控件收起；含 `/` 的 model id 反查 */
+effortSelect.props.onChange({ target: { value: "high" } });
+hookIndex = 0;
+formTree = render(HotbarsModal(beeSlotProps()));
+eq(selectOf(formTree, L("hive.hb.effort")).props.value, "high", "选定档位后回显（受控 value = 绑定档位键）");
+selectOf(formTree, L("hive.hb.model")).props.onChange({ target: { value: "p-a/plain" } });
+hookIndex = 0;
+formTree = render(HotbarsModal(beeSlotProps()));
+eq(selectOf(formTree, L("hive.hb.model")).props.value, "p-a/plain", "换模型后回显新模型");
+eq(selectOf(formTree, L("hive.hb.effort")), null, "所选模型无 reasoning.efforts → 档位下拉不渲染");
+selectOf(formTree, L("hive.hb.model")).props.onChange({ target: { value: "p-a/org/sub" } });
+hookIndex = 0;
+formTree = render(HotbarsModal(beeSlotProps()));
+ok(collect(selectOf(formTree, L("hive.hb.model")), (n) => n.tag === "option").some((o) => o.props.value === "p-a/org/sub"), "含 / 的 model id 键命中真实 option（映射反查，无字符串解析）");
+
+/* 保存链路：model 与档位落草稿载荷 */
+let savedSlots = null;
+const saveProps = beeSlotProps({ onSave: async (next) => { savedSlots = next; return { ok: true }; } });
+let saveTree = openBeeForm(saveProps);
+selectOf(saveTree, L("hive.hb.model")).props.onChange({ target: { value: "p-a/glm-5.3-flash" } });
+hookIndex = 0;
+saveTree = render(HotbarsModal(saveProps));
+selectOf(saveTree, L("hive.hb.effort")).props.onChange({ target: { value: "high" } });
+hookIndex = 0;
+saveTree = render(HotbarsModal(saveProps));
+await collect(saveTree, (n) => String(n.props.className ?? "").includes("jyv-qcSave"))[0].props.onClick();
+eq(savedSlots?.bee?.[0]?.model, { provider: "p-a", model: "glm-5.3-flash", reasoningEffort: "high" }, "保存链路：槽位 model 形状 {provider, model, reasoningEffort} 落草稿载荷");
+
+/* 重开回显 + 切回「使用默认模型」→ 清字段（undefined，SHALL NOT 留空对象占位） */
+let savedCleared = null;
+const clearProps = beeSlotProps({
+  hotbars: { hive: [], bee: [{ id: "b1", name: "蜂指令", prompt: "跑测试", autoSend: false, model: { provider: "p-a", model: "glm-5.3-flash", reasoningEffort: "high" } }], floor: [] },
+  onSave: async (next) => { savedCleared = next; return { ok: true }; }
+});
+let clearTree = openBeeForm(clearProps);
+eq(selectOf(clearTree, L("hive.hb.model")).props.value, "p-a/glm-5.3-flash", "已绑定模型重开 → 精确回显（不弹回默认）");
+eq(selectOf(clearTree, L("hive.hb.effort")).props.value, "high", "已绑定档位重开 → 精确回显");
+selectOf(clearTree, L("hive.hb.model")).props.onChange({ target: { value: "" } });
+hookIndex = 0;
+clearTree = render(HotbarsModal(clearProps));
+eq(selectOf(clearTree, L("hive.hb.model")).props.value, "", "切回「使用默认模型」→ 空键");
+await collect(clearTree, (n) => String(n.props.className ?? "").includes("jyv-qcSave"))[0].props.onClick();
+ok(savedCleared !== null && !("model" in savedCleared.bee[0]), "切回默认 → 载荷无 model 键（undefined 不落盘）");
+
+/* 目录不可用（无活会话/拉取失败）：提示替代控件 + 草稿已存值保留 */
+let savedUnavailable = null;
+const unavailProps = beeSlotProps({
+  hotbars: { hive: [], bee: [{ id: "b1", name: "蜂指令", prompt: "跑测试", autoSend: false, model: { provider: "p-a", model: "glm-5.3-flash" } }], floor: [] },
+  modelCatalog: null,
+  modelState: "unavailable",
+  onSave: async (next) => { savedUnavailable = next; return { ok: true }; }
+});
+const unavailTree = openBeeForm(unavailProps);
+ok(!selectOf(unavailTree, L("hive.hb.model")), "目录不可用 → 无模型下拉（提示替代）");
+ok(textOf(unavailTree).includes(L("hive.swarm.modelUnavailable")), "目录不可用提示呈现");
+await collect(unavailTree, (n) => String(n.props.className ?? "").includes("jyv-qcSave"))[0].props.onClick();
+eq(savedUnavailable?.bee?.[0]?.model, { provider: "p-a", model: "glm-5.3-flash" }, "不可用态只挡新选择：草稿已存模型值保留（SHALL NOT 清空或改写）");
+
+/* ══ 5c. 蜂栏「导入快捷功能」（plugin-config-import；5.2/5.3/5.5） ══ */
+
+const importBtnOf = (tree) => collect(tree, (n) => String(n.props.className ?? "").includes("jyv-hbImport"))[0];
+/* 进入蜂栏节（可用性探针在挂载 effect 内，需等一个宏任务落地） */
+const openBeeSection = async (props) => {
+  hookCells = []; hookIndex = 0;
+  pass(props);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  collect(pass(props), (n) => n.props?.id === "jyv-railTab-bee")[0].props.onClick();
+  const tree = pass(props);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  return pass(props);
+};
+const beeRowCount = (tree) => collect(tree, (n) => String(n.props.className ?? "").includes("jyv-qcRow") && typeof n.props.onClick === "function").length;
+const saveOf = (tree) => collect(tree, (n) => String(n.props.className ?? "").includes("jyv-qcSave"))[0];
+
+/* 入口只出现在蜂栏节（巢栏/地板栏 SHALL NOT 出现） */
+hookCells = []; hookIndex = 0;
+eq(importBtnOf(render(HotbarsModal(beeSlotProps()))), undefined, "巢栏节不出现「导入快捷功能」入口");
+
+/* 未安装/未启用（available:false + namespace-unregistered）→ 按钮灰置 + 悬停原因 */
+importResponder = (respond) => respond(200, { ok: true, available: false, reason: "namespace-unregistered" });
+const importBtnOff = importBtnOf(await openBeeSection(beeSlotProps()));
+ok(importBtnOff, "蜂栏节呈现「导入快捷功能」按钮");
+eq(importBtnOff.props.disabled, true, "源不可用 → 按钮灰置（不可点击）");
+eq(importBtnOff.props.title, L("hive.hb.importNotInstalled"), "悬停说明 = 未安装/未启用文案");
+
+/* 宿主 settings 缺席 → 两态文案可区分 */
+importResponder = (respond) => respond(200, { ok: true, available: false, reason: "settings-service-absent" });
+eq(importBtnOf(await openBeeSection(beeSlotProps())).props.title, L("hive.hb.importServiceAbsent"), "悬停说明 = 宿主 settings 缺席文案（两态可区分）");
+
+/* 可用：重名跳过 + model 1:1 + 非法 model 剥离 + 三计数 toast */
+importResponder = (respond) =>
+  respond(200, {
+    ok: true,
+    available: true,
+    buttons: [
+      { name: "设计", prompt: "做设计", autoSend: true, model: { provider: "p-a", model: "glm-5.3-flash", reasoningEffort: "max" } },
+      { name: "蜂指令", prompt: "重名条目", autoSend: false },
+      { name: "新建", prompt: "新建提案", autoSend: true, model: { provider: "", model: "破" } }
+    ]
+  });
+const toasts = [];
+let importedPayload = null;
+const importProps = beeSlotProps({
+  onNotify: (text, kind) => toasts.push({ text, kind }),
+  onSave: async (next) => { importedPayload = next; return { ok: true }; }
+});
+const importTree = await openBeeSection(importProps);
+const importBtnOn = importBtnOf(importTree);
+eq(importBtnOn.props.disabled, false, "源可用 → 按钮可点");
+await importBtnOn.props.onClick();
+hookIndex = 0;
+const importedTree = render(HotbarsModal(importProps));
+eq(beeRowCount(importedTree), 3, "导入 2 条 → 蜂栏草稿 1 + 2 = 3 行（重名条目跳过不导入）");
+eq(toasts.at(-1)?.text, "导入 2 条，跳过 1 条（重名），因容量未导入 0 条", "toast 汇报三计数（调用方填好模板文本后透出）");
+eq(toasts.at(-1)?.kind, "ok", "有导入 → ok 级 toast");
+
+/* 导入条目落草稿形态：id 重铸 + 保序 + model 1:1 / 非法剥离（保存载荷核对） */
+await saveOf(importedTree).props.onClick();
+eq(importedPayload.bee.length, 3, "保存载荷 = 既有 + 导入条目");
+eq(importedPayload.bee[1].name, "设计", "导入条目按源数组序追加（保序）");
+eq(importedPayload.bee[1].model, { provider: "p-a", model: "glm-5.3-flash", reasoningEffort: "max" }, "model 1:1 映射（含档位）");
+eq(importedPayload.bee[2].name, "新建", "重名者被跳过后的下一条照常导入");
+ok(!("model" in importedPayload.bee[2]), "形状非法 model → 剥离字段但保留条目主体");
+ok(importedPayload.bee[1].id !== "b1" && importedPayload.bee[1].id !== importedPayload.bee[2].id, "id 重新铸造（不与既有/彼此冲突）");
+ok(!("model" in importedPayload.bee[0]) && importedPayload.bee[0].name === "蜂指令", "既有槽位未被覆盖（重名不自动改名）");
+
+/* 容量截断：已有 30 条（上限 32）→ 仅前 2 条导入，K = 3 */
+const manyBee = Array.from({ length: 30 }, (_, i) => ({ id: "x" + i, name: "槽" + i, prompt: "p" + i, autoSend: false }));
+importResponder = (respond) => respond(200, { ok: true, available: true, buttons: Array.from({ length: 5 }, (_, i) => ({ name: "新" + i, prompt: "p", autoSend: false })) });
+const capToasts = [];
+let capPayload = null;
+const capProps = beeSlotProps({
+  hotbars: { hive: [], bee: manyBee, floor: [] },
+  onNotify: (text, kind) => capToasts.push({ text, kind }),
+  onSave: async (next) => { capPayload = next; return { ok: true }; }
+});
+const capTree = await openBeeSection(capProps);
+await importBtnOf(capTree).props.onClick();
+hookIndex = 0;
+const capTree2 = render(HotbarsModal(capProps));
+eq(beeRowCount(capTree2), 32, "容量截断：30 + 2 = 32（其余未导入）");
+await saveOf(capTree2).props.onClick();
+eq(capPayload.bee.length, 32, "蜂栏 32 上限：装不下的条目 SHALL NOT 落稿");
+eq(capToasts.at(-1)?.text, "导入 2 条，跳过 0 条（重名），因容量未导入 3 条", "容量截断逐条判定：装不下即止计 K（保序不回填）");
+
+/* 拉取失败（404 宿主旧版无该路由）→ toast 且草稿零变化（无半批） */
+importResponder = (respond) => respond(404, { error: "unknown route" });
+const failToasts = [];
+let failSaved = null;
+const failProps = beeSlotProps({ onNotify: (text, kind) => failToasts.push({ text, kind }), onSave: async (next) => { failSaved = next; return { ok: true }; } });
+const failTree = await openBeeSection(failProps);
+const failBtn = importBtnOf(failTree);
+eq(failBtn.props.disabled, false, "拉取失败态保持可点（点击重试，非灰置——灰置只表「源不可用」）");
+await failBtn.props.onClick();
+hookIndex = 0;
+const failTree2 = render(HotbarsModal(failProps));
+eq(beeRowCount(failTree2), 1, "拉取失败 → 草稿零变化（无半批导入）");
+eq(failToasts.at(-1)?.text, "导入失败：宿主未重启或版本较旧（缺少导入端点）——请重启 dsh 后重试", "拉取失败 toast 含「宿主未重启或版本较旧」提示");
+eq(failToasts.at(-1)?.kind, "err", "失败 → err 级 toast");
+await saveOf(failTree2).props.onClick();
+eq(failSaved.bee.length, 1, "保存载荷仍为导入前草稿（无半批残留）");
+importResponder = null;
 
 /* ── 6. 保存链路（5.3）：ctl().actions.saveHotbars → PUT 409 重放 ── */
 const storeActionsStub = {

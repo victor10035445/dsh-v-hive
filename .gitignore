@@ -14,3 +14,6 @@ hive-chrome-preview.html
 *.fbx
 *.fbm/
 blue-worker/
+
+# 语音工作台落盘产物（生产路径写各目标工作区；仓库根的本地演示输出不入库）
+hive-voice/

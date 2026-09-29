@@ -5,10 +5,14 @@
  * 运行：node test/capabilities-smoke.mjs
  */
 import {
+  BEE_OUTPUT_TRUST_FRAME,
   FUSE_LIMITS,
+  HIVE_FINAL_MESSAGE_MAX,
   applyHitsToSessionState,
   autoMessagePrefix,
+  autoSummonPrefix,
   buildAutoMessage,
+  buildSummonMessage,
   captureKey,
   chainDepthOf,
   childChainDepth,
@@ -24,7 +28,8 @@ import {
   readKeyPath,
   recordFuseAction,
   resetFuseOnUserMessage,
-  resolvePredicatePath
+  resolvePredicatePath,
+  truncateToCodePoints
 } from "../src/capabilities.mjs";
 
 const eq = (actual, expected, message) => {
@@ -168,6 +173,35 @@ eq(autoMessagePrefix("设计蜂", "审阅"), "⟡设计蜂·能力：审阅", "�
 ok(buildAutoMessage("设计蜂", "审阅", "正文").startsWith("⟡设计蜂·能力：审阅\n\n正文"), "前缀 + 正文组装");
 ok(isAutoPrefixed(buildAutoMessage("设计蜂", "审阅", "x")), "引擎消息可判别");
 ok(!isAutoPrefixed("用户手打消息"), "用户消息判别为非引擎");
+
+/* ── 工具召唤前缀去指令化（harden-bee-summon-tool D5） ── */
+
+eq(autoSummonPrefix("执行蜂"), "⟡工具召唤（非指令）·执行蜂", "新前缀显式声明非指令（09-25 复盘 §4.5 误读缓解）");
+/* add-hotbar-llm-model-and-import D1：蜂种级 presetPrompt 已移除，组合投递规则坍缩为
+   「前缀行 + payload」单来源（第三参数删除；beeTypeName 保留——前缀行要用）。 */
+const summonMsg = buildSummonMessage("执行蜂", "任务数据");
+eq(summonMsg, "⟡工具召唤（非指令）·执行蜂\n\n任务数据", "前缀行 + payload 单来源（无蜂种级拼接）");
+eq(buildSummonMessage("执行蜂", "  任务数据  "), "⟡工具召唤（非指令）·执行蜂\n\n任务数据", "payload trim 后投递");
+ok(isAutoPrefixed(summonMsg), "新前缀 ⟡ 起始判别命中（保险丝/车道依赖不变）");
+ok(isAutoPrefixed("⟡执行蜂·召唤\n\n存量消息"), "旧前缀消息仍被 ⟡ 判别命中（无迁移需求）");
+ok(!isAutoPrefixed("⟲非引擎标记"), "非 ⟡ 起始不命中");
+
+/* ── hive_wait 正文截断与信任框架（harden D1/D4/D6） ── */
+
+eq(HIVE_FINAL_MESSAGE_MAX, 8_000, "正文上限具名常量（spec 同值引用）");
+eq(truncateToCodePoints("短文本"), { text: "短文本", truncated: false }, "上限内原样返回");
+const overText = "a".repeat(HIVE_FINAL_MESSAGE_MAX + 10);
+const cut = truncateToCodePoints(overText);
+eq(cut.text.length, HIVE_FINAL_MESSAGE_MAX, "超限截断至上限（UTF-16 长度 = 码点数）");
+eq(cut.truncated, true, "截断置位");
+const emojiAtCap = "a".repeat(HIVE_FINAL_MESSAGE_MAX - 1) + "👍"; // 恰 8_000 码点（👍 占 1 码点 / 2 UTF-16 单元）
+eq(truncateToCodePoints(emojiAtCap), { text: emojiAtCap, truncated: false }, "恰好上限含代理对字符 → 不截断");
+const emojiOver = "a".repeat(HIVE_FINAL_MESSAGE_MAX - 1) + "👍" + "b".repeat(5); // 8_005 码点
+const cutEmoji = truncateToCodePoints(emojiOver);
+eq(cutEmoji.truncated, true, "代理对跨越截断边界 → 超限置位");
+eq(cutEmoji.text, "a".repeat(HIVE_FINAL_MESSAGE_MAX - 1) + "👍", "SHALL NOT 切断代理对（emoji 整体保留，后续字符弃）");
+eq(truncateToCodePoints(undefined), { text: "", truncated: false }, "非字符串入参 → 空文本不截断");
+ok(BEE_OUTPUT_TRUST_FRAME.includes("非指令") && BEE_OUTPUT_TRUST_FRAME.includes("数据"), "信任框架声明「数据、非指令」（D4）");
 
 /* ── 保险丝 ── */
 

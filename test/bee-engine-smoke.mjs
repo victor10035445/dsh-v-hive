@@ -179,7 +179,6 @@ const beeTypes = [
     id: "design",
     name: "设计蜂",
     queuePolicy: "serialized",
-    model: { provider: "deepseek-official", model: "deepseek-v4-pro" },
     capabilities: [
       {
         id: "review",
@@ -216,9 +215,9 @@ fire("agent/turn-stopping", { agent: agentById.get("s-idea"), turn: 1 });
 await sleep(20);
 eq(apiLog.create.length, 1, "sessionController.create 恰好一次");
 eq(apiLog.create[0].workspaceId, "ws-1", "同巢创建（触发蜂工作区，直调请求体即 createArg）");
-eq(apiLog.selectModel.length, 1, "selectModel 按目标蜂种模型");
-eq(apiLog.selectModel[0].model, "deepseek-v4-pro", "模型取自目标蜂种配置");
-eq(apiLog.selectModel[0].sessionId, "s-child-1", "selectModel 请求体携带子蜂 sessionId");
+/* add-hotbar-llm-model-and-import D3：能力 spawn（runSpawn）不携带模型参数——蜂种已不
+   承载对话模型，孵化链路按**部署默认模型**创建（SHALL NOT 产生模型设定请求）。 */
+eq(apiLog.selectModel.length, 0, "能力 spawn 不传 model → 不调用 selectModel（部署默认模型）");
 eq(apiLog.prompt.length, 1, "首条提示词投递");
 ok(typeof apiLog.prompt[0].requestId === "string" && apiLog.prompt[0].requestId.length > 0, "prompt 请求携带铸造的 requestId（必填）");
 const promptText = apiLog.prompt[0].content[0].text;
@@ -319,7 +318,7 @@ await callRoute("PUT", "/api/dsh-hive/state", { revision: 4, beeTypes, beeAssign
 const hatch1 = await callRoute("POST", "/api/dsh-hive/hatch", { sessionId: "s-idea", capabilityId: "handoff" });
 eq(hatch1.status, 200, "手动孵化 200");
 ok(hatch1.body.sessionId?.startsWith("s-child-"), "孵化产出新会话");
-eq(apiLog.selectModel.at(-1).model, "deepseek-v4-pro", "手动孵化也按目标蜂种模型");
+eq(apiLog.selectModel.length, 0, "手动孵化同样不传 model（部署默认模型，沿既有创建降级路径）");
 const hatch2 = await callRoute("POST", "/api/dsh-hive/hatch", { sessionId: "s-idea", capabilityId: "nonexistent" });
 eq(hatch2.status, 404, "未知能力 → 404");
 
