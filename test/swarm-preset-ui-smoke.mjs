@@ -279,8 +279,9 @@ const fieldLabels = collect(modal1, (n) => n.tag === "label" && String(n.props.c
 const fieldText = fieldLabels.map((n) => textOf(n)).join(" | ");
 ok(!fieldText.includes("hive.swarm.model"), "SHALL NOT 出现「对话模型」字段（hive.swarm.model）");
 ok(!collect(modal1, (n) => n.tag === "option").some((o) => String(o.props.value ?? "").includes("volc/deepseek-v3.1")), "SHALL NOT 渲染模型目录选项");
-eq(fieldLabels.length, 2, "表单字段仅排队策略 + 外观模型（无模型/无预设提示词）");
-ok(fieldText.includes("hive.swarm.queuePolicy") && fieldText.includes("hive.swarm.beeModel"), "保留字段：排队策略 + 外观模型");
+eq(fieldLabels.length, 1, "label 形字段仅排队策略（外观模型改为按钮条容器 div，无 label 包裹）");
+ok(fieldText.includes("hive.swarm.queuePolicy"), "保留字段：排队策略");
+ok(textOf(modal1).includes("hive.swarm.beeModel"), "保留字段：外观模型（控件改为色版按钮条，字段名仍在）");
 eq(collect(modal1, (n) => n.tag === "textarea").length, 0, "types 面板 SHALL NOT 含 textarea（预设提示词输入框已删；描述为单行 input）");
 
 /* ── 2. 保存链路：存量两字段经 normalizeBeeTypes 静默剥离，其余字段无损 ── */
@@ -297,12 +298,68 @@ eq(savedRows[0].queuePolicy, "free", "排队策略无损");
 const aligned = normalizeBeeTypes(mirror);
 ok(!("model" in aligned[0]) && !("presetPrompt" in aligned[0]), "normalizeBeeTypes 剥离两字段（客户端与宿主同口径）");
 
-/* ── 3. 外观模型下拉回归护栏（3D 资产，不受字段瘦身影响） ── */
-const beeLabels = collect(modal1, (n) => n.tag === "label" && String(n.props.className ?? "").includes("jyv-swarmField") && textOf(n).includes("hive.swarm.beeModel"));
-eq(beeLabels.length, 1, "外观模型字段在场");
-const beeSelect = collect(beeLabels[0], (n) => n.tag === "select")[0];
-const beeValues = collect(beeSelect, (n) => n.tag === "option").map((o) => o.props.value);
-eq(beeValues, [...BEE_APPEARANCE_MODELS], "外观模型选项集 = BEE_APPEARANCE_MODELS（键格式未变）");
+/* ── 3. 外观模型色版选择条（bee-model-choose-by-color D2/D4）：由原生 <select>
+      改为 4 钮色版按钮条——键/值集不变、单选语义与缺省映射原样；色版未就绪不阻塞。 ── */
+const beeFields = collect(modal1, (n) => String(n.props.className ?? "").includes("jyv-swarmField") && textOf(n).includes("hive.swarm.beeModel"));
+ok(beeFields.length === 1 && collect(beeFields[0], (n) => n.tag === "select").length === 0, "外观模型字段在场且 SHALL NOT 再是原生 <select>（option 无法嵌图）");
+const swatchGroup = collect(beeFields[0], (n) => String(n.props?.className ?? "").includes("jyv-swarmModels"))[0];
+ok(swatchGroup, "色版按钮条容器（jyv-swarmModels）在场");
+eq(swatchGroup.props.role, "radiogroup", "色版按钮条为单选组语义（role=radiogroup）");
+const beeSwatches = collect(swatchGroup, (n) => n.tag === "button");
+eq(beeSwatches.length, BEE_APPEARANCE_MODELS.length, `色版按钮数 = ${BEE_APPEARANCE_MODELS.length}（每外观模型一键）`);
+eq(beeSwatches.map((b) => textOf(b)), [...BEE_APPEARANCE_MODELS].map((id) => "hive.beeModel." + id), "按钮标签键 = hive.beeModel.<id>（键格式未变、取词条经 t()）");
+eq(beeSwatches.map((b) => b.props["aria-pressed"]), BEE_APPEARANCE_MODELS.map((id) => id === BEE_APPEARANCE_MODELS[0]), "缺省行（beeModel undefined）选中态落在默认外观项");
+eq(collect(modal1, (n) => n.tag === "img").length, 0, "无 previews → 不渲染 <img>（纯文字钮），SHALL NOT 报错");
+eq(collect(modal1, (n) => String(n.props?.className ?? "").includes("jyv-modelSwatchOn")).length, 1, "选中态描边高亮唯一（单选语义）");
+
+/* 交互：点击 → patchType 值语义（默认项 = beeModel undefined，其它 = 该 id）；
+   点色版只改草稿、SHALL NOT 触发保存/关闭。 */
+let swatchSaves = 0;
+const propsSwatch = { ...props1, onSave: async (rows) => { swatchSaves += 1; savedRows = rows; return { ok: true }; } };
+const rerender = (props) => {
+  hookIndex = 0; // 每遍渲染从第一个 hook 胞元开始（沿 hotbars-ui-smoke 纪律）
+  return render(BeeSwarmModal(props));
+};
+const swatchesOf = (tree) => collect(collect(tree, (n) => String(n.props?.className ?? "").includes("jyv-swarmField") && textOf(n).includes("hive.swarm.beeModel"))[0], (n) => String(n.props?.className ?? "").includes("jyv-swarmModels"))[0];
+const stopped = { stopped: 0, stopPropagation() { this.stopped += 1; } };
+beeSwatches[0].props.onClick(stopped);
+eq(stopped.stopped, 1, "点击色版 SHALL NOT 冒泡到整行选中（stopPropagation）");
+const treeDefault = rerender(propsSwatch);
+eq(swatchSaves, 0, "点击默认项未触发保存（仅改草稿）");
+eq(collect(treeDefault, (n) => n.tag === "button" && String(n.props["aria-pressed"]) === "true").map((b) => textOf(b)), ["hive.beeModel." + BEE_APPEARANCE_MODELS[0]], "点默认项 → 选中态回默认（beeModel undefined）");
+const beeSwatches2 = collect(swatchesOf(treeDefault), (n) => n.tag === "button");
+beeSwatches2[1].props.onClick({ stopPropagation() {} });
+const treePurple = rerender(propsSwatch);
+eq(collect(swatchesOf(treePurple), (n) => n.tag === "button" && String(n.props["aria-pressed"]) === "true").map((b) => textOf(b)), ["hive.beeModel." + BEE_APPEARANCE_MODELS[1]], "点非默认项 → 该 id 选中");
+await typesPanelSave(treePurple)[0].props.onClick();
+eq(swatchSaves, 1, "色版交互后保存链路仍可达（仅显式点保存才落盘）");
+eq(savedRows[0].beeModel, BEE_APPEARANCE_MODELS[1], "保存载荷 beeModel = 点选的模型 id");
+eq(savedRows[0].name, "执行蜂", "切换外观后其余字段无损");
+
+/* 色版就绪（previews 命中 `worker:idle`）→ 原位补图，键 = `${modelId}:idle` */
+hookCells = []; hookIndex = 0; // 新组件实例（色版已就绪场景）
+const modalPreview = render(BeeSwarmModal({
+  ...props1,
+  previews: { "worker:idle": "data:image/png;base64,WORKERIDLE", "purple_worker:idle": "data:image/png;base64,PURPLEIDLE" }
+}));
+eq(
+  collect(modalPreview, (n) => n.tag === "img").map((i) => i.props.src),
+  ["data:image/png;base64,WORKERIDLE", "data:image/png;base64,PURPLEIDLE"],
+  "previews 命中 → 色版按 `${modelId}:idle` 渲染（缺省行映射 worker，故默认项不空）"
+);
+ok(collect(modalPreview, (n) => n.tag === "img").every((i) => i.props.alt === "" && i.props.draggable === false), "色版图 alt 空（文字标签即无障碍名）+ 不可拖拽");
+
+/* 文案直给护栏（spec「标签颜色直给」）：zh 无「蓝峰」错别字、en 无「Lanfeng」音译 */
+const beeLocale = localeCaptures.find((c) => c.dict?.zh && c.dict?.en);
+eq(beeLocale.dict.zh["hive.beeModel.blue_worker"], "蓝蜂", "zh 修正「蓝峰」→「蓝蜂」");
+eq(beeLocale.dict.zh["hive.beeModel.worker"], "黑红工蜂（默认）", "zh 默认项按真实主色命名并保留缺省语义标注");
+eq(beeLocale.dict.en["hive.beeModel.blue_worker"], "Blue worker", "en 替换「Lanfeng」音译为 Blue worker");
+eq(beeLocale.dict.en["hive.beeModel.worker"], "Black-red worker (default)", "en 默认项按真实主色命名并保留缺省标注");
+for (const lang of ["zh", "en"]) {
+  const values = Object.entries(beeLocale.dict[lang]).filter(([k]) => k.startsWith("hive.beeModel.")).map(([, v]) => v);
+  eq(values.length, 4, `${lang} 外观模型四词条齐备`);
+  ok(!values.some((v) => v.includes("蓝峰") || v.includes("Lanfeng")), `${lang} SHALL NOT 出现错别字/音译旧名`);
+}
 
 /* ── 4. 能力编辑器页签不受影响（tab 切换后仍渲染能力列表） ── */
 const capTabs = collect(modal1, (n) => n.props?.id === "jyv-swarmTab-caps");

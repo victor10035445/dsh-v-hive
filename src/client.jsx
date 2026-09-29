@@ -743,10 +743,10 @@ const zh = {
   "hive.swarm.queueFree": "自由（不占道）",
   "hive.swarm.queueSerialized": "排队（同巢自动动作互斥）",
   "hive.swarm.beeModel": "外观模型",
-  "hive.beeModel.worker": "默认工蜂",
+  "hive.beeModel.worker": "黑红工蜂（默认）",
   "hive.beeModel.purple_worker": "紫工蜂",
   "hive.beeModel.pink_worker": "粉工蜂",
-  "hive.beeModel.blue_worker": "蓝峰",
+  "hive.beeModel.blue_worker": "蓝蜂",
   "hive.swarm.modelNone": "使用默认模型",
   "hive.swarm.modelLoading": "模型目录加载中…",
   "hive.swarm.modelUnavailable": "暂无活会话可取模型目录",
@@ -1189,10 +1189,10 @@ const en = {
   "hive.swarm.queueFree": "Free (never queues)",
   "hive.swarm.queueSerialized": "Serialized (auto actions queue per studio)",
   "hive.swarm.beeModel": "Bee model",
-  "hive.beeModel.worker": "Default worker",
+  "hive.beeModel.worker": "Black-red worker (default)",
   "hive.beeModel.purple_worker": "Purple worker",
   "hive.beeModel.pink_worker": "Pink worker",
-  "hive.beeModel.blue_worker": "Lanfeng",
+  "hive.beeModel.blue_worker": "Blue worker",
   "hive.swarm.modelNone": "Use default model",
   "hive.swarm.modelLoading": "Loading model catalog…",
   "hive.swarm.modelUnavailable": "No live session to read the model catalog from",
@@ -2259,6 +2259,33 @@ function HivePage(props) {
   const [voiceWs, setVoiceWs] = useState(null);
   /* 在册工作区清单镜像（工作台目标工作区下拉数据源）。 */
   const [voiceWorkspaces, setVoiceWorkspaces] = useState([]);
+  /* ── 页级模态/瞬态 state：**必须在下方任何 effect 之前声明** ──
+     本组 state 被下方多个 useEffect 的依赖数组引用（如 `[ctl, settingsOpen]`、
+     `[swarmOpen, ctl]`）。依赖数组在**渲染期**求值，若声明落在 effect 之后即命中
+     TDZ（`Cannot access 'settingsOpen' before initialization`）——实盘浏览器曾因此
+     整页崩（shell.overlay 条目 componentDidCatch）。此前它们散落在千行之外，
+     故此处集中前置；新增页级 state 一律并入本组。 */
+  /* WebGL 降级标记（attach 失败 → 降级卡）。 */
+  const [webglFailed, setWebglFailed] = useState(settings.renderer === "fallback2d");
+  /* WebGL 重试序号（降级卡「重试」按钮驱动）：attach 失败后可原地重试，不必重开页面 */
+  const [sceneRetrySeq, setSceneRetrySeq] = useState(0);
+  const [menu, setMenu] = useState(null);
+  /* 蜂巢编辑开关：页面态，默认关、不持久化（design.md D5）；经 getScene().setEditMode 下发。 */
+  const [editMode, setEditMode] = useState(false);
+  /* 页内设置模态（context-hotbar-rework 4.x 左纵排改版：场景/外观/布局三节）。
+     guardRef 由模态注册「关闭请求」处理（脏草稿 → 离开提醒；干净 → 直接关），
+     页级 Esc 分层（模态栈）与模态自身 ✕/遮罩共用同一入口。 */
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const settingsGuardRef = useRef(null);
+  /* 蜂群编辑浮窗（custom-bee-types 4.2）：同款守卫与 Esc 分层。 */
+  const [swarmOpen, setSwarmOpen] = useState(false);
+  const swarmGuardRef = useRef(null);
+  /* 指令编辑模态（context-hotbar-rework 5.x）：页头 ⟡ 旁入口，左纵排三节。 */
+  const [hotbarsOpen, setHotbarsOpen] = useState(false);
+  const hotbarsGuardRef = useRef(null);
+  /* 模型目录（4.3，S4）：浮窗打开时经活会话拉一次。 */
+  const [modelCatalog, setModelCatalog] = useState(null);
+  const [modelState, setModelState] = useState("idle");
   /* 编排核心依赖代理（保持「每帧最新」而无需重建核心——重建会丢会话状态）。 */
   const voiceDepsRef = useRef({});
   const deskRef = useRef(null);
@@ -2397,26 +2424,6 @@ function HivePage(props) {
   const degraded = pageLeft === null;
 
   const hostRef = useRef(null);
-  const [webglFailed, setWebglFailed] = useState(settings.renderer === "fallback2d");
-  /* WebGL 重试序号（降级卡「重试」按钮驱动）：attach 失败后可原地重试，不必重开页面 */
-  const [sceneRetrySeq, setSceneRetrySeq] = useState(0);
-  const [menu, setMenu] = useState(null);
-  /* 蜂巢编辑开关：页面态，默认关、不持久化（design.md D5）；经 getScene().setEditMode 下发。 */
-  const [editMode, setEditMode] = useState(false);
-  /* 页内设置模态（context-hotbar-rework 4.x 左纵排改版：场景/外观/布局三节）。
-     guardRef 由模态注册「关闭请求」处理（脏草稿 → 离开提醒；干净 → 直接关），
-     页级 Esc 分层（模态栈）与模态自身 ✕/遮罩共用同一入口。 */
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const settingsGuardRef = useRef(null);
-  /* 蜂群编辑浮窗（custom-bee-types 4.2）：同款守卫与 Esc 分层。 */
-  const [swarmOpen, setSwarmOpen] = useState(false);
-  const swarmGuardRef = useRef(null);
-  /* 指令编辑模态（context-hotbar-rework 5.x）：页头 ⟡ 旁入口，左纵排三节。 */
-  const [hotbarsOpen, setHotbarsOpen] = useState(false);
-  const hotbarsGuardRef = useRef(null);
-  /* 模型目录（4.3，S4）：浮窗打开时经活会话拉一次。 */
-  const [modelCatalog, setModelCatalog] = useState(null);
-  const [modelState, setModelState] = useState("idle");
 
   const toggleEdit = () => {
     const next = !editMode;
@@ -2491,6 +2498,17 @@ function HivePage(props) {
       if (hiveOpenStore.getSnapshot()) ctl().actions.getScene?.()?.start();
     };
   }, [floatOpen, ctl]);
+
+  /* 蜂群编辑浮窗「打开即预载全部外观变体」（bee-model-choose-by-color 3.6 / design D1）：
+     经既有 client→scene 方法通道下发（与 setOutlineBeeIds 同渠样），幂等——逐 id no-op
+     已就绪/加载中项，重复打开不重复发请求（HTTP 缓存 max-age=86400 兜底二次下载）。
+     场景可因 2D 降级未挂载 → 可选链静默跳过，色版降级为纯文字（SHALL NOT 报错/阻塞）；
+     快照生成仍由场景每帧通道 _ensureBeePreviews 在变体就绪后补出，经 beePreviewStore
+     回流为 BeeSwarmModal 的 previews。 */
+  useEffect(() => {
+    if (!swarmOpen) return;
+    ctl().actions.getScene?.()?.ensureEditorVariants?.();
+  }, [swarmOpen, ctl]);
 
   /* 生命周期收口（3.6）：浮窗态在 hiveStore 跨页开合残留会让下次开页直接进浮窗；
      页面卸载兜底收浮窗（覆盖座位/热键/头部按钮/Esc 全部关页路径）。 */
@@ -3210,6 +3228,7 @@ function HivePage(props) {
             t={t}
             beeTypes={beeTypes}
             guardRef={swarmGuardRef}
+            previews={beePreviewStore.getMap()}
             onClose={() => setSwarmOpen(false)}
             onSave={(rows) => ctl().actions.saveBeeTypes?.(rows) ?? Promise.resolve({ ok: false, error: "controller unavailable" })}
             onNotify={(text, kind) => notify?.(text, kind)}
@@ -3433,7 +3452,7 @@ const SetGroup = ({ label }) => <div className="jyv-setGroup">{label}</div>;
  * 预校验（字段级 zh/en 提示）→ 控制器 putState（409 重放 + host-stale 检测）。
  * ------------------------------------------------------------------ */
 
-function BeeSwarmModal({ t, beeTypes, guardRef, onClose, onSave, onNotify }) {
+function BeeSwarmModal({ t, beeTypes, guardRef, onClose, onSave, onNotify, previews }) {
   const [tab, setTab] = useState("types");
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const tabRefs = useRef({});
@@ -3624,14 +3643,42 @@ function BeeSwarmModal({ t, beeTypes, guardRef, onClose, onSave, onNotify }) {
                       <option value="serialized">{t("hive.swarm.queueSerialized")}</option>
                     </select>
                   </label>
-                  <label className="jyv-swarmField">
+                  <div className="jyv-swarmField">
                     <span>{t("hive.swarm.beeModel")}</span>
-                    <select value={row.beeModel ?? "worker"} onChange={(e) => patchType(row.id, e.target.value === "worker" ? { beeModel: undefined } : { beeModel: e.target.value })}>
-                      {BEE_APPEARANCE_MODELS.map((id) => (
-                        <option key={id} value={id}>{t("hive.beeModel." + id)}</option>
-                      ))}
-                    </select>
-                  </label>
+                    {/* 色版按钮条（bee-model-choose-by-color D2）：原生 <option> 无法嵌图 →
+                        每外观模型一个按钮 = idle 态快照色版 + 标签。色版取既有
+                        `${modelId}:idle` 键（预览通道 idle = 模型本色，无状态染色）；
+                        缺省行（beeModel undefined）映射 DEFAULT_APPEARANCE_MODEL，
+                        否则默认项会成为唯一无图项（取图口径，不改存储语义）。
+                        无快照（未就绪 / 场景未挂载 / 渲染循环暂停）→ 不渲染 <img>，
+                        纯文字可点，不报错不阻塞表单。 */}
+                    <div className="jyv-swarmModels" role="radiogroup" aria-label={t("hive.swarm.beeModel")} title={t("hive.swarm.beeModel")}>
+                      {BEE_APPEARANCE_MODELS.map((id) => {
+                        const current = row.beeModel ?? DEFAULT_APPEARANCE_MODEL;
+                        const label = t("hive.beeModel." + id);
+                        const preview = previews?.[id + ":idle"] ?? null;
+                        return (
+                          <button
+                            key={id}
+                            type="button"
+                            className={"jyv-modelSwatch" + (current === id ? " jyv-modelSwatchOn" : "")}
+                            aria-pressed={current === id}
+                            title={label}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              const next = id === DEFAULT_APPEARANCE_MODEL ? undefined : id;
+                              if (next !== row.beeModel) patchType(row.id, { beeModel: next });
+                            }}
+                          >
+                            <span className="jyv-modelSwatchFig">
+                              {preview ? <img src={preview} alt="" draggable={false} /> : null}
+                            </span>
+                            <span className="jyv-modelSwatchLabel">{label}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
                 </div>
                 <input
                   className="jyv-qcPromptInput jyv-swarmDesc"
@@ -5278,20 +5325,29 @@ export function apply(ctx) {
         /* locale.bind 的 t 交给场景（卡片文案）；条目组件用框架注入的 tProp。 */
         controllerRef.current?.setT?.(t);
 
-        return (
-          <HivePageOverlay
-            t={tProp}
-            useStore={useStore}
-            setFullscreen={setFullscreen}
-            toggleLegend={toggleLegend}
-            clearToast={clearToast}
-            notify={notify}
-            setSettings={setSettings}
-            openFloat={openFloat}
-            closeFloat={closeFloat}
-            ctl={ctl}
-          />
-        );
+        /* 渲染失败可诊断（client-bundle-compat 精神：压缩包里的崩溃只给压缩变量名，
+           「Cannot access 'et' before initialization」这类 TDZ 报错无从定位）。rc.2 起
+           构建随包产出 lib/client.js.map（宿主 client-modules 会自动组装索引 sourcemap），
+           故此处把栈原样打给控制台——**仅 stderr、不改渲染**，成功路径零成本。 */
+        try {
+          return (
+            <HivePageOverlay
+              t={tProp}
+              useStore={useStore}
+              setFullscreen={setFullscreen}
+              toggleLegend={toggleLegend}
+              clearToast={clearToast}
+              notify={notify}
+              setSettings={setSettings}
+              openFloat={openFloat}
+              closeFloat={closeFloat}
+              ctl={ctl}
+            />
+          );
+        } catch (error) {
+          console.error("[dsh-v-hive] hive page render failed:", error);
+          throw error;
+        }
       }
     )
   );

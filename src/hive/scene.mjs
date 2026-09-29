@@ -931,6 +931,15 @@ export class HiveScene {
         直接复用 <img>——SHALL NOT 每卡挂独立上下文。外观模型为懒加载，变体就绪的
         下一帧补生成；全部缓存命中后本入口零渲染成本。 ── */
 
+  /** 编辑浮窗「打开即预载全部外观变体」入口（bee-model-choose-by-color 2.2）：
+      client 侧蜂群浮窗打开时经既有 client→scene 方法通道调用（与 setOutlineBeeIds
+      同渠样，可选链兜「场景未挂载」= 2D 降级）。薄封装——快照生成仍由每帧通道
+      _ensureBeePreviews 承担，本入口只补「变体加载触发点」；幂等可重入
+      （bees.ensureAllVariants 内部逐 id no-op 已就绪/加载中项）。 */
+  ensureEditorVariants() {
+    this.bees.ensureAllVariants();
+  }
+
   /** 逐模型 × 逐状态补齐快照缓存（每帧调用；缓存命中即跳过）。 */
   _ensureBeePreviews() {
     for (const modelId of BEE_APPEARANCE_MODELS) {

@@ -327,6 +327,15 @@ export class BeeLayer {
     this.loadModel(modelId);
   }
 
+  /** 确保全部外观变体已加载（bee-model-choose-by-color 2.1）：编辑浮窗打开时按需
+      触发一次全量预载，使色版快照不必等「第一只该外观的蜂出现」。
+      幂等可重入——逐 id 复用 ensureVariant（默认 worker 构造已载、加载中/已就绪
+      均 no-op），重复打开不重复发请求；失败路径沿用 loadModel 的 variants.delete()
+      （下次打开重试，每次打开各变体至多一次，SHALL NOT 无限重试）。 */
+  ensureAllVariants() {
+    for (const modelId of BEE_APPEARANCE_MODELS) this.ensureVariant(modelId);
+  }
+
   /** 加载外观模型 GLB：收集 Mesh 部件 → 归一化（居中/包围球半径 = 比例尺 BEE_RADIUS/
        朝向 +X）→ 实例化。仅浏览器环境加载（Node 单测/压测无 fetch，保持图元路径——
        图元蜂自成比例，不随比例尺缩放）。加载失败移除占位变体（可重试）。 */
@@ -336,7 +345,12 @@ export class BeeLayer {
     this.variants.set(modelId, { ready: false, loading: true, masks: [], buckets: null });
     const loader = new GLTFLoader();
     loader.load(
-      "/api/dsh-hive/assets/" + modelId + ".glb",
+      /* 宿主资产路由是 `/api/dsh-hive/assets/<白名单子目录>/<file>`（子目录 `models/` +
+         文件名各为单段白名单，见 src/index.mjs「资产服务」段：`parts.length !== 2` 即
+         400）。此前此处漏写 `models/` 段 → **四个外观模型全部 400**、`variants.delete()`
+         静默回落图元蜂（实盘表现＝场景蜂恒为白色图元体，与所选外观无关；HEAD 即存在的
+         既有缺陷，预载改动只是把它从「偶发一次」放大为「一次三个」）。 */
+      "/api/dsh-hive/assets/models/" + modelId + ".glb",
       (gltf) => {
         try {
           this.attachModel(gltf.scene, modelId);

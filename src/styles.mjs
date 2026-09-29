@@ -219,6 +219,15 @@ div:has(> [data-slot="sidebar.footer.action"]):has(.jyv-seat){flex-wrap:wrap}
 .jyv-swarmField select{height:26px;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary);border:1px solid var(--dsw-alias-border-l2);border-radius:6px;font-size:12px;padding:0 6px;max-width:220px}
 .jyv-swarmFieldGrow{flex:1;min-width:180px}
 .jyv-swarmFieldGrow select{max-width:none;width:100%}
+/* 外观模型色版按钮条（bee-model-choose-by-color D2）：替代原生 <select>——每模型一钮 =
+   idle 快照色版 + 标签；未就绪无 <img> 即纯文字钮（不动布局、不阻塞表单）。 */
+.jyv-swarmModels{display:flex;flex-wrap:wrap;gap:6px;align-self:flex-start}
+.jyv-modelSwatch{display:flex;flex-direction:column;align-items:center;gap:2px;width:74px;padding:4px 6px;cursor:pointer;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-secondary);border:1px solid var(--dsw-alias-border-l2);border-radius:8px}
+.jyv-modelSwatch:hover{border-color:var(--dsw-alias-state-business-primary)}
+.jyv-modelSwatchOn{border-color:var(--dsw-alias-state-business-primary);box-shadow:inset 0 0 0 1px var(--dsw-alias-state-business-primary);color:var(--dsw-alias-label-primary)}
+.jyv-modelSwatchFig{width:100%;height:34px;display:flex;align-items:center;justify-content:center;overflow:hidden;border-radius:6px;background:color-mix(in srgb,var(--dsw-alias-bg-base) 60%,transparent)}
+.jyv-modelSwatchFig img{width:100%;height:100%;object-fit:contain;pointer-events:none}
+.jyv-modelSwatchLabel{font-size:11px;line-height:14px;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
 .jyv-swarmHint{color:var(--dsw-alias-label-tertiary);font-size:11px;height:26px;display:inline-flex;align-items:center}
 .jyv-swarmDesc{margin-top:8px}
 /* 预设提示词编辑项（hive-summon-tool 5.1）：textarea 形态，复用 qcPromptInput 基形。 */
