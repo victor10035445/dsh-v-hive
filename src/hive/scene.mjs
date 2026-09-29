@@ -615,6 +615,10 @@ export class HiveScene {
       this.territory.setStudios(this.studioLayers);
       this.walls.setStudios(this.studioLayers);
       this.occupancy = world.occupancy ?? new Map();
+      /* 静态全场包围球（bee-pick-and-marquee-focus D1）：巢分布变化（首次落位 / 建巢 /
+         搬巢）时重算一次并覆写图元通路拾取网格 + 代理网格。落位是离散低频事件，
+         SHALL NOT 逐帧重算；镜像 tick 下签名不变 → 零成本（bees 侧另做值比对短路）。 */
+      this.bees.setFieldExtent(this.studioLayers);
     }
     /* 底图水印层（hive-watermark）：文字源逐 tick 刷新（改名时 studioSig 不变——R3/D2），
        层内签名比对去抖，setStudios 高频调用安全 */
@@ -847,18 +851,33 @@ export class HiveScene {
     this._marqueePreview = new Set(this.beesInRect(this._marqueeRect));
   }
 
-  /** 松手提交（interact onMarqueeEnd，2.6）：即时计算命中（不走 rAF 节流）。
-      命中 ≥1 → 清既有单选（后到者赢：巢描边与光墙消失）+ 提交多选集（ids 为
-      投影序冻结数组）；命中 0 → 空框选：多选集清空、既有单选维持不动。
+  /** 松手提交（interact onMarqueeEnd，2.6；bee-pick-and-marquee-focus D4 增单蜂分支）：
+      即时计算命中（不走 rAF 节流）。
+       - 命中 ≥2 → 清既有单选（后到者赢：巢描边与光墙消失）+ 提交多选集（ids 为
+         投影序冻结数组）；
+       - 命中恰好 1 → **等价点蜂**（D4）：SHALL NOT 提交多选集（走 `onMarqueeCommit([])`
+         空集通道，选框 DOM 照常收口），`clearSelection()` 后触发与单击蜂同链的
+         `onSelectBee`（scene 既有包装：清多选 → 清单选 → 外壳 `actions.selectBee`
+         → `ctx.sessions.open`）——书写序「先清集、后选蜂」（两写 marqueeStore 同向
+         且幂等，零新增状态）；
+       - 命中 0 → 空框选：多选集清空、既有单选维持不动。
+      `beesInRect → beeIdsInRect` 已排除无人机与降级停驻蜂，故单蜂分支恒为可选中工蜂
+      （无人机「单击无动作」语义不因本分支改变）。
       预览集合失效（描边回落正式集合）。 */
   _onMarqueeEnd(rect) {
     const ids = this.beesInRect(rect);
     this._marqueeRect = null;
     this._marqueeDirty = false;
     this._marqueePreview = null;
+    this.callbacks.onMarqueeRect?.(null); // 选框 DOM 收口
+    if (ids.length === 1) {
+      this.clearMarquee(); // 先清集（多选集保持为空，SHALL NOT 进入多选态）
+      this.clearSelection(); // 清既有单选（巢描边与光墙消失；单击蜂链同款包装）
+      this.callbacks.onSelectBee?.(ids[0]);
+      return;
+    }
     if (ids.length > 0) this.clearSelection();
     this.marqueeSet = new Set(ids);
-    this.callbacks.onMarqueeRect?.(null); // 选框 DOM 收口
     this.callbacks.onMarqueeCommit?.(ids);
   }
 

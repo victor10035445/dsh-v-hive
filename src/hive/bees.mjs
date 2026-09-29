@@ -28,7 +28,7 @@
  */
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
-import { BEE_RADIUS, SQRT3 } from "../hex.mjs";
+import { BEE_RADIUS, SQRT3, wallRadius } from "../hex.mjs";
 import { BEE_APPEARANCE_MODELS, DEFAULT_APPEARANCE_MODEL } from "../bee-types.mjs";
 
 export const STATE_COLORS = Object.freeze({
@@ -55,6 +55,13 @@ const MODEL_YAW = Math.PI / 2; // glTF 角色朝 +Z → 蜂头朝 +X
  *  （0.0825 × BEE_RADIUS；蜂体最远触达 BEE_RADIUS + BUSY_WANDER ≈ 0.864 < 0.866）。 */
 export const BUSY_WANDER = 0.08 * BEE_RADIUS;
 export const BUSY_WANDER_MAX = SQRT3 / 2 - BEE_RADIUS; // 几何上界（内切圆 − 蜂半径）
+
+/* ── 拾取宽容球半径（bee-pick-and-marquee-focus D2）：比例尺锚点倍率，禁独立绝对值
+   魔数（与 BUSY_WANDER / LOD_* 同一纪律，冒烟锁定等式）。球心 = 蜂矩阵原点 ⇒
+   径向余量 ≈ 0.32~0.34 世界单位（模型视觉半尺寸 ≈ 0.458/0.482/0.445，余量 ≈ 1.7 倍）；
+   仍受比例尺纪律约束：2 × 0.8 = 1.6 < 相邻格心距 √3 ≈ 1.732（**三维**不重叠；
+   屏幕空间重叠由「最近命中优先」消解，SHALL NOT 宣称屏幕空间不重叠）。唯一旋钮。 */
+export const BEE_PICK_RADIUS = 1.0 * BEE_RADIUS;
 
 /* ── LOD 距离分桶常量（design.md D1；BEE_RADIUS 倍率——比例尺锚点唯一约束，
    禁独立绝对值魔数）。距离语义 = 蜂世界坐标到相机世界坐标的距离（屏幕占比语义）。 ── */
@@ -91,6 +98,68 @@ export function assignTier(record, dist) {
     return TIER_FAR;
   }
   return dist <= LOD_NEAR ? TIER_NEAR : dist <= LOD_MID ? TIER_MID : TIER_FAR;
+}
+
+/**
+ * 静态全场包围球（bee-pick-and-marquee-focus D1）：圆心 = 各巢世界中心的外接中心，
+ * 半径 = max(巢心距圆心距离) + 该巢墙外接半径 wallRadius(layer) + 2×BEE_RADIUS
+ * 余量（巢内离场升空/无人机绕飞环/忙碌低巡水平位移 + 蜂体半径，全部 ≤ 1×BEE_RADIUS，
+ * 取 2× 保守）。纯 raycast early-out 用途（`frustumCulled = false` 下渲染器不用它；
+ * `three.core.js` 的 `intersectsObject` 与视锥剔除路径都不参与）——「永不误杀」优先于
+ * 「紧贴分布」，故余量取保守侧。用途与边界见 design.md D1。
+ *
+ * @param {Array<{worldCenter: {x:number,z:number}, layer:number}>} studioLayers
+ * @returns {THREE.Sphere}
+ */
+export function fieldSphereOf(studioLayers) {
+  const list = Array.isArray(studioLayers) ? studioLayers : [];
+  if (list.length === 0) return new THREE.Sphere(new THREE.Vector3(0, 0, 0), 2 * BEE_RADIUS);
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minZ = Infinity;
+  let maxZ = -Infinity;
+  for (const studio of list) {
+    const wc = studio?.worldCenter;
+    if (!wc) continue;
+    minX = Math.min(minX, wc.x);
+    maxX = Math.max(maxX, wc.x);
+    minZ = Math.min(minZ, wc.z);
+    maxZ = Math.max(maxZ, wc.z);
+  }
+  if (!Number.isFinite(minX)) return new THREE.Sphere(new THREE.Vector3(0, 0, 0), 2 * BEE_RADIUS);
+  const cx = (minX + maxX) / 2;
+  const cz = (minZ + maxZ) / 2;
+  let radius = 0;
+  for (const studio of list) {
+    const wc = studio?.worldCenter;
+    if (!wc) continue;
+    const margin = wallRadius(studio.layer ?? 1); // 巢内分布（格心距巢心 ≤ 补丁外接半径）
+    radius = Math.max(radius, Math.hypot(wc.x - cx, wc.z - cz) + margin);
+  }
+  return new THREE.Sphere(new THREE.Vector3(cx, 0, cz), radius + 2 * BEE_RADIUS);
+}
+
+/** 群体级早退球并集（D1 收敛项）：候选球 ∪ 单蜂球（圆心 + 定长半径，零分配地写入 out）。 */
+function unionGroupSphere(out, x, y, z, radius) {
+  if (out.radius < 0) {
+    out.center.set(x, y, z);
+    out.radius = radius;
+    return;
+  }
+  const dx = x - out.center.x;
+  const dy = y - out.center.y;
+  const dz = z - out.center.z;
+  const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+  if (dist + radius <= out.radius) return; // 已被覆盖（多数帧的常态：群体球远大于单蜂球）
+  if (dist + out.radius <= radius) {
+    out.center.set(x, y, z);
+    out.radius = radius;
+    return;
+  }
+  const next = (out.radius + dist + radius) / 2;
+  const k = dist > 1e-6 ? (next - out.radius) / dist : 0;
+  out.center.set(out.center.x + dx * k, out.center.y + dy * k, out.center.z + dz * k);
+  out.radius = next;
 }
 
 /**
@@ -253,8 +322,31 @@ export class BeeLayer {
     this.group = new THREE.Group();
     scene.add(this.group);
     this.buckets = createBuckets(); // 图元路径桶集
-    this._buildPrimitiveMeshes(this.maxBees);
+    /* 静态全场包围球（D1）：构造期先给「单巢岛」兜底球——`setWorld → setFieldExtent`
+       在首帧前按真实巢分布覆写；图元拾取网格的 `boundingSphere` 因此**永不为 null**
+       （实例矩阵缓冲初值为零尺度矩阵，惰性 `computeBoundingSphere()` 会算出 NaN 球 →
+       射线被永久 early-out，正是根因 A）。 */
+    this._fieldSphere = fieldSphereOf([]);
     this.beeMap = new Map(); // sessionId → bee record
+    /* 拾取代理（D2/D2b）：每蜂一个球体实例（半径 = BEE_PICK_RADIUS），逐帧随姿态同步、
+       覆盖全档；不进渲染列表（visible=false，`Raycaster` 不检 `visible`——已核实并以
+       冒烟锁定），不参与视锥剔除；矩阵每帧全量重写（T2 冻结蜂一并重写，换取远档同样
+       具备宽容热区，design 已知取舍②）。 */
+    this.pickGeom = new THREE.SphereGeometry(BEE_PICK_RADIUS, 8, 6);
+    this.pickMesh = new THREE.InstancedMesh(this.pickGeom, this.bodyMat, this.maxBees);
+    this.pickMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.pickMesh.frustumCulled = false;
+    this.pickMesh.visible = false; // 不参与渲染（raycast 仍可用）
+    this.pickMesh.count = 0;
+    this.pickBuckets = createBuckets(); // 记录表容器（tierParts 恒空 = 无部件网格写入）
+    this.pickMesh.userData.pick = { buckets: this.pickBuckets, tier: TIER_NEAR };
+    this.group.add(this.pickMesh);
+    /* 群体级早退球（D1 硬性配对项）：当帧候选群体的包围球，由帧路径 O(N) 维护
+       （~60 个浮点运算/蜂，与既有逐帧矩阵写入同量级）；半径初值 -1 = 空集哨兵。 */
+    this._pickSphere = new THREE.Sphere(new THREE.Vector3(), -1);
+    this._pickScratch = new THREE.Sphere();
+    this._applyFieldSphere(this.pickMesh);
+    this._buildPrimitiveMeshes(this.maxBees);
     this.reduced = opts.reduced ?? false;
     this.time = 0;
     /* LOD 分桶状态（design.md D1/D5）：出泡例外集由 scene 每帧下发（悬停/选中/展开）。 */
@@ -289,6 +381,32 @@ export class BeeLayer {
     this.loadModel(this.defaultModelId);
   }
 
+  /** 静态全场包围球写入单个拾取网格（D1）：**显式赋值**覆盖全场，SHALL NOT 依赖
+      `InstancedMesh` 惰性快照（`computeBoundingSphere()` 的惰性路径对零尺度初始矩阵
+      会算出 NaN/退化球，即根因 A）。仅图元通路与代理网格赋值——GLB 部件网格保留其
+      由几何居中 + 实例矩阵求得的紧球（模型路径的紧球是有效 early-out，替换成全场球
+      反而更慢，design D1）。 */
+  _applyFieldSphere(mesh) {
+    mesh.boundingSphere = new THREE.Sphere().copy(this._fieldSphere);
+  }
+
+  /** 巢分布下发（D1）：`layout 重建`/世界镜像变化时由 scene 下发 studioLayers，
+      重算一次静态全场球并覆写**全部图元通路拾取网格 + 代理网格**。纯 raycast
+      early-out 用途；`frustumCulled=false` 语义不变。
+      同一分布重复下发（搬巢无关的镜像 tick）经值比对短路：不新建球对象、不重写网格。 */
+  setFieldExtent(studioLayers) {
+    const next = fieldSphereOf(studioLayers);
+    const changed =
+      Math.abs(next.radius - this._fieldSphere.radius) > 1e-6 ||
+      next.center.distanceToSquared(this._fieldSphere.center) > 1e-12;
+    if (!changed) return;
+    this._fieldSphere = next;
+    for (const tierParts of this.buckets.tierParts) {
+      for (const part of tierParts) this._applyFieldSphere(part.mesh);
+    }
+    this._applyFieldSphere(this.pickMesh);
+  }
+
   /** 图元三档网格装配（新建/扩容共用）：body/abdomen 各三档（共享几何/材质）+
      翅膀仅近档；castShadow 仅 T0 桶承载（阴影随桶收缩，design.md D6）。 */
   _buildPrimitiveMeshes(capacity) {
@@ -302,6 +420,7 @@ export class BeeLayer {
         mesh.renderOrder = 10;
         mesh.castShadow = tier === TIER_NEAR;
         mesh.count = 0;
+        this._applyFieldSphere(mesh); // D1：静态全场球（SHALL NOT 走惰性路径）
         if (tinted) for (let i = 0; i < capacity; i++) mesh.setColorAt(i, this.white); // 预分配 instanceColor
         mesh.userData.pick = { buckets, tier }; // 拾取解析：(mesh, instanceId) → 桶记录表
         this.group.add(mesh);
@@ -522,8 +641,9 @@ export class BeeLayer {
         tier: prev?.tier // 档位随记录持久（design.md D1；记录对象每次镜像重建）
       };
       this.beeMap.set(bee.id, record);
-      renderList.push(record);
+    renderList.push(record);
     }
+    const leavingRecords = new Set(); // 离场中记录（入渲染列表、不入拾取代理）
     for (const [id, record] of this.beeMap) {
       if (nextIds.has(id)) continue;
       const target = honeyTargets.get(id);
@@ -540,9 +660,19 @@ export class BeeLayer {
          但保留于 beeMap——重现（done→busy 恢复运行、显隐开关切回全量）经既有
          差分走 "in" 出场动画（D4 依赖）。时长与 poseOf 动画共用同一常量出处。 */
       const exitDur = record.anim === "toHoney" ? EXIT_TO_HONEY_MS : EXIT_OUT_MS;
-      if (this.time - record.animStart < exitDur) renderList.push(record);
+      if (this.time - record.animStart < exitDur) {
+        renderList.push(record);
+        leavingRecords.add(record); // 离场中（含本帧才转入者）：入渲染列表但不入拾取代理
+      }
     }
     this.renderList = renderList;
+    /* 离场中记录集（bee-pick-and-marquee-focus D2b）：`renderList` 在离场动画窗口内还含
+       「已离场仍在播动画」的记录（可见桶据此时长继续画收拢动画），而拾取代理只应覆盖
+       **点得到**的蜂 ⇒ 代理同步以「活蜂记录集」为门槛（记录对象每次镜像重建，故按引用
+       判定）。代理实例数由此恒 ≤ maxBees，不受离场记录把 renderList 顶过容量的影响
+       （`InstancedMesh.setMatrixAt` 无边界检查，越界即写坏实例缓冲）。 */
+    this._liveRecords = new Set(renderList);
+    for (const record of leavingRecords) this._liveRecords.delete(record);
     /* 外观变体解析（bee-model-variants）：蜂记录的 beeModel（scene 自蜂种 overlay
        透传）→ 合法模型 id；未知/缺省回落 worker，并确保对应变体懒加载。 */
     for (const record of renderList) {
@@ -569,7 +699,9 @@ export class BeeLayer {
     }
   }
 
-  /** T2 槽位分配（进桶沿）：写冻结矩阵与状态色，槽位表登记，置脏标记。 */
+  /** T2 槽位分配（进桶沿）：写冻结矩阵与状态色，槽位表登记，置脏标记。
+      代理桶集 `tierParts[TIER_FAR]` 恒空（matrix 由调用方写代理网格，color 传 null
+      ——无 instanceColor 分账），本方法对之自然退化为「槽位表 + 记录表」登记。 */
   _allocT2Slot(buckets, record, matrix, color) {
     let slot;
     if (buckets.free.length > 0) slot = buckets.free.pop();
@@ -579,7 +711,7 @@ export class BeeLayer {
     buckets.records[TIER_FAR][slot] = record;
     for (const part of buckets.tierParts[TIER_FAR]) {
       part.mesh.setMatrixAt(slot, matrix);
-      if (part.tinted) part.mesh.setColorAt(slot, color);
+      if (part.tinted && color) part.mesh.setColorAt(slot, color);
     }
     buckets.matrixDirty = true;
     buckets.colorDirty = true;
@@ -598,6 +730,23 @@ export class BeeLayer {
       part.mesh.setMatrixAt(slot, this.zeroScale);
       part.mesh.instanceMatrix.needsUpdate = true;
     }
+  }
+
+  /** 代理网格重建（容量不变量，D2b）：旧实例移除/释放，新实例容量 = maxBees，
+      静态全场球重赋，T2 槽位表在实例槽位上位置不变故记录表无需搬迁（矩阵每帧全量
+      重写）。抛错或漏调即越界——`setMatrixAt` 无边界检查（three.core.js :25034），
+      模型路径下 `setBees` 不会 `grow()`，百蜂/千蜂规模必须靠本方法扩容。 */
+  _rebuildPickMesh() {
+    this.group.remove(this.pickMesh);
+    this.pickMesh.dispose();
+    this.pickMesh = new THREE.InstancedMesh(this.pickGeom, this.bodyMat, this.maxBees);
+    this.pickMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.pickMesh.frustumCulled = false;
+    this.pickMesh.visible = false;
+    this.pickMesh.count = 0;
+    this.pickMesh.userData.pick = { buckets: this.pickBuckets, tier: TIER_NEAR };
+    this._applyFieldSphere(this.pickMesh);
+    this.group.add(this.pickMesh);
   }
 
   grow(needed) {
@@ -620,6 +769,7 @@ export class BeeLayer {
     this.wings.dispose();
     this.maxBees = next;
     this._buildPrimitiveMeshes(next);
+    this._rebuildPickMesh(); // D2b：代理随 grow() 同步扩容（容量恒 = maxBees）
     /* 回放 T2 冻结槽位（矩阵/状态色原样搬入新缓冲，迁移沿置位上传） */
     const newFar = this.buckets.tierParts[TIER_FAR];
     newFar.forEach((part, i) => {
@@ -705,6 +855,17 @@ export class BeeLayer {
     return { x, y, z, facing, glowPulse, scale };
   }
 
+  /** 每帧姿态缓存：帧循环算出的 `record.pose` 打上帧戳，代理同步据此复用（同帧零重复
+      计算——否则每帧要多付一遍 `poseOf`，千蜂量级约 +0.13ms/帧；帧预算见 perf-smoke）。 */
+  _poseCached(record) {
+    const t = this.time;
+    if (record.poseStamp === t && record.pose) return record.pose;
+    const pose = this.poseOf(record, t, this.reduced ? 0 : 1);
+    record.pose = pose;
+    record.poseStamp = t;
+    return pose;
+  }
+
   /** 蜂矩阵合成（共用：T0/T1 逐帧写与 T2 冻结写同源，防两处漂移）。 */
   _composeBee(pose) {
     this.euler.set(0, -pose.facing, 0);
@@ -717,6 +878,134 @@ export class BeeLayer {
   /** 强制近档判定（design.md D4）：生命周期动画 / 描边蜂（单值或集合，3.1）/ 出泡例外集（悬停/选中/展开）。 */
   _isForcedNear(record) {
     return record.anim !== "none" || this._isOutlined(record) || this.anchorIds.has(record.id);
+  }
+
+  /**
+   * 拾取代理逐帧同步（D2b；**写入点 = 定档之后、姿态已算之处**，两个帧路径各调一次，
+   * SHALL NOT 只挂近档写入循环——否则远档蜂在代理里缺席）：
+   *  - 单遍 renderList：`poseOf` 一次定档（与可见桶同一判据），matrix = `_composeBee`
+   *    同源蜂矩阵（SHALL NOT 另算一套姿态）；
+   *  - **实例号两段不重叠布局**：紧凑段（近/中档当帧序）占 `0 .. near+mid-1`，远档
+   *    冻结段占 `near+mid .. near+mid+slots-1`（= 紧凑段长度 + 槽位号）。两段**同帧**
+   *    叠加，若共用同一号段则「槽位号 0」与「紧凑号 0」互相遮蔽 ⇒ `beeAt` 会把远档
+   *    实例解析成另一只蜂（抬取命中却选错蜂）。故远档写号 = 当帧紧凑段长度 + 槽位号
+   *    （`farOffset`），`beeAt` 的回落亦按同一口径；
+   *  - 记录表每帧先清空再按同一遍累积（与 `buckets.records[TIER_NEAR/MID]` 同构；
+   *    远档写一次固定槽位、与 `_allocT2Slot` 同一槽位表语义），覆盖三档（含远档冻结
+   *    姿态者）与无人机分类（`origin = "subagent"` 的 drone / 降级停驻蜂照常入表——
+   *    `interact.pick` 的 `origin` 分类口径不变，无人机照旧不可选中）；
+   *  - 离场蜂按 `pose.scale <= 0.01` 与模型路径同门槛跳过（「不可见即不可拾取」两条
+   *    路径一致）；
+   *  - 同时 O(N) 维护群体级早退球（D1）：候选球 ∪ 当帧写入代理的每只蜂
+   *    （圆心 + BEE_PICK_RADIUS），供 `pick()` 入场前一次射线-球拒绝测试。
+   */
+  syncPickProxies(t, liveRecords) {
+    const proxy = this.pickBuckets;
+    const mesh = this.pickMesh;
+    /* 记录表每帧先清空再按同一遍累积；远档槽位表跨帧保留（冻结槽位复用） */
+    proxy.records[TIER_NEAR].length = 0;
+    proxy.records[TIER_MID].length = 0;
+    const nearRecs = proxy.records[TIER_NEAR];
+    const midRecs = proxy.records[TIER_MID];
+    /* 紧凑段布局：NEAR 占 `0..nearN-1`、MID 紧随占 `nearN..nearN+midN-1`（两段不重叠，
+       远档块再紧随其后——实例号全域无歧义）。 */
+    let nearN = 0;
+    let midN = 0;
+    /* 远档冻结（D3）的代理侧对应：可见桶在远档不逐帧重写矩阵，代理若无条件重写就把该
+       收益吃掉。判定用两条**严格信号**（不看矩阵数值——空闲槽与新占槽可能数值相同却是
+       不同蜂，逐值比较无法证伪「未变」）：
+         · 槽位未迁移：上帧记录的槽号 == 本帧 `slots.get(id)`；
+         · 紧凑段长度未变：长度一变，远档实例号（紧凑段长度 + 槽位号）全体平移。
+       两者同时成立 ⇒ 该实例槽承载同一只蜂、冻结姿态早已写入 ⇒ 跳过写入。
+       首帧、槽位迁移、长度变化一律退回写入（正确性优先，性能次之）。 */
+    const prevCompact = proxy.compactLen ?? -1;
+    const prevSlots = proxy.slotSnapshot ?? null; // 上帧 id → 槽号
+    /* 群体级早退球：从空集起累积（半径 < 0 = 空集哨兵） */
+    const group = this._pickSphere;
+    group.center.set(0, 0, 0);
+    group.radius = -1;
+    for (const record of this.renderList ?? []) {
+      /* 代理的契约是「点得到的蜂」：正在播离场动画的记录（renderList 会含它，可见桶据
+         此时长继续画收拢动画）**不入代理**——它们不可拾取，同时使代理实例数恒
+         ≤ `liveRecords.size ≤ maxBees`（不受离场窗口把 renderList 顶过容量的影响）。
+         已播完（scale ≤ 0.01）的记录同侧跳过，并回收其远档实例槽（写零尺度，防残影）。 */
+      const departed = !liveRecords?.has(record);
+      if (departed) {
+        const stale = proxy.slots.get(record.id);
+        if (stale !== undefined) {
+          const at = (prevCompact >= 0 ? prevCompact : 0) + stale;
+          mesh.setMatrixAt(at, this.zeroScale);
+          this._freeT2Slot(proxy, record.id);
+        }
+        continue;
+      }
+      const pose = this._poseCached(record); // 帧戳命中则复用（同帧零重复）
+      record.pose = pose; // 卡片投影读取（与可见桶同一写入语义）
+      if (pose.scale <= 0.01) {
+        /* 已播完的退场蜂：与 frameModel 同门槛跳过（写入侧与记录表同侧跳过）；
+           其远档实例槽同步写零尺度矩阵，避免残影被拾取（与可见桶 _freeT2Slot 同向）。 */
+        const stale = proxy.slots.get(record.id);
+        if (stale !== undefined) {
+          const at = (prevCompact >= 0 ? prevCompact : 0) + stale;
+          mesh.setMatrixAt(at, this.zeroScale);
+          this._freeT2Slot(proxy, record.id);
+        }
+        continue;
+      }
+      unionGroupSphere(group, pose.x, pose.y, pose.z, BEE_PICK_RADIUS);
+      const forced = !this._pickHasCamera || this._isForcedNear(record);
+      let tier;
+      if (forced) {
+        tier = TIER_NEAR; // 强制帧不改写自然档位（record.tier），与可见桶同一纪律
+      } else {
+        const dx = record.world.x - this._pickCamX;
+        const dy = record.world.y - this._pickCamY;
+        const dz = record.world.z - this._pickCamZ;
+        tier = assignTier(record, Math.sqrt(dx * dx + dy * dy + dz * dz));
+        record.tier = tier;
+      }
+      if (tier !== TIER_FAR) {
+        if (proxy.slots.has(record.id)) this._freeT2Slot(proxy, record.id);
+        const writeIndex = tier === TIER_MID ? nearN + midN++ : nearN++;
+        (tier === TIER_MID ? midRecs : nearRecs).push(record); // 实例 i ↔ 记录 i（同序同构）
+        mesh.setMatrixAt(writeIndex, this._composeBee(pose));
+        continue;
+      }
+      const slot = proxy.slots.get(record.id);
+      if (slot === undefined) {
+        const fresh = this._allocT2Slot(proxy, record, null, null);
+        mesh.setMatrixAt(nearN + midN + fresh, this._composeBee(pose));
+        continue;
+      }
+      proxy.records[TIER_FAR][slot] = record; // 镜像刷新（记录对象每次 setBees 重建）
+      const stable = prevCompact === nearN + midN && prevSlots?.get(record.id) === slot;
+      if (!stable) mesh.setMatrixAt(nearN + midN + slot, this._composeBee(pose));
+    }
+    /* 档位计数 / 实例数收口：紧凑段 + 远档段（槽位表占用数，非高水位——`next` 是分配
+       高水位，收缩回收后仍偏大，用它当长度会在规模缩小时把 count 顶过容量）。
+       **容量夹逼**：`renderList` 在离场动画窗口内可含「已离场但仍播动画」的记录（可见桶
+       的既有语义），同帧（蜂数 = 容量 ∧ 一只在离场）时三段之和会到 `maxBees + 1`——
+       `InstancedMesh.count` 越界会让 `getMatrixAt` 读出缓冲外的数据。夹逼保证
+       `count ≤ 容量`（越界尾实例本就不该被拾取：代理的契约是「点得到的蜂」，离场即出列）。 */
+    proxy.counts[TIER_NEAR] = nearN;
+    proxy.counts[TIER_MID] = midN;
+    proxy.farOffset = nearN + midN; // 当帧远档块偏移（beeAt 回落同一口径）
+    let maxSlot = -1;
+    for (const slot of proxy.slots.values()) {
+      if (slot > maxSlot) maxSlot = slot;
+    }
+    mesh.count = Math.min(nearN + midN + maxSlot + 1, this.maxBees);
+    mesh.instanceMatrix.needsUpdate = true;
+    /* 冻结判定基准持久化：紧凑段长度 + 槽位表快照（供下帧比对）。两块 Map 交替复用
+       （`slotSnapshot`/`slotSnapshotPrev` 互换）——每帧新建千级 Map 的构造成本与一次
+       全量矩阵重写同量级，交替复用后每帧只付「清空 + 逐 id 写入」。 */
+    proxy.compactLen = nearN + midN;
+    const scratch = proxy.slotSnapshotScratch ?? new Map();
+    scratch.clear();
+    for (const [id, slot] of proxy.slots) scratch.set(id, slot);
+    proxy.slotSnapshot = scratch;
+    proxy.slotSnapshotScratch = proxy.slotSnapshotPrev ?? new Map();
+    proxy.slotSnapshotPrev = scratch;
   }
 
   /** 每帧推进（图元路径）。dt 毫秒；cameraPos = 相机世界坐标（scene.loop 下发）——
@@ -744,6 +1033,11 @@ export class BeeLayer {
     const camX = hasCamera ? cameraPos.x : 0;
     const camY = hasCamera ? cameraPos.y : 0;
     const camZ = hasCamera ? cameraPos.z : 0;
+    /* 代理同步与早退球共用同一相机定档（syncPickProxies 读本组 scratch） */
+    this._pickHasCamera = hasCamera;
+    this._pickCamX = camX;
+    this._pickCamY = camY;
+    this._pickCamZ = camZ;
     let wingCount = 0;
     /* 单遍 renderList 定档 → 写桶（design.md D5） */
     for (const record of this.renderList ?? []) {
@@ -762,8 +1056,9 @@ export class BeeLayer {
       if (tier === TIER_FAR) {
         const slot = buckets.slots.get(record.id);
         if (slot === undefined) {
-          /* 进桶沿：姿态计算一次并冻结（矩阵此后不逐帧重写，design.md D3） */
-          const pose = this.poseOf(record, t, flap);
+          /* 进桶沿：姿态计算一次并冻结（矩阵此后不逐帧重写，design.md D3）；
+             帧戳缓存使同帧的代理同步直接复用本次结果（零重复计算）。 */
+          const pose = this._poseCached(record);
           record.pose = pose;
           this._composeBee(pose);
           this.color.copy(STATE_COLORS[record.state] ?? STATE_COLORS.idle).multiplyScalar(1 + pose.glowPulse);
@@ -782,7 +1077,7 @@ export class BeeLayer {
         }
         continue;
       }
-      const pose = this.poseOf(record, t, flap);
+      const pose = this._poseCached(record);
       record.pose = pose; // 卡片投影读取（bubble-anchor-and-bee-fixes D1：锚点跟随姿态）
       this._composeBee(pose);
       const index = buckets.counts[tier]++;
@@ -846,6 +1141,8 @@ export class BeeLayer {
       if (this._primitiveMaskCount > 0) mask.instanceMatrix.needsUpdate = true;
     }
     this.outlineState.active = this._outlinedThisFrame;
+    /* 拾取代理同步 + 群体级早退球（D1/D2b）：定档之后、姿态已算之处 */
+    this.syncPickProxies(t, this._liveRecords);
   }
 
   /** 每帧推进（GLB 模型路径，按外观变体分桶 × LOD 三档）：beeMatrix × 部件归一化
@@ -855,6 +1152,10 @@ export class BeeLayer {
     const camX = hasCamera ? cameraPos.x : 0;
     const camY = hasCamera ? cameraPos.y : 0;
     const camZ = hasCamera ? cameraPos.z : 0;
+    this._pickHasCamera = hasCamera;
+    this._pickCamX = camX;
+    this._pickCamY = camY;
+    this._pickCamZ = camZ;
     for (const variant of this.variants.values()) {
       if (!variant.ready) continue;
       const b = variant.buckets;
@@ -868,7 +1169,7 @@ export class BeeLayer {
     }
     this._outlinedThisFrame = false;
     for (const record of this.renderList ?? []) {
-      const pose = this.poseOf(record, t, this.reduced ? 0 : 1);
+      const pose = this._poseCached(record);
       record.pose = pose; // 卡片投影读取（锚点跟随姿态）
       if (pose.scale <= 0.01) continue; // 出场完成即不画
       const own = this.variants.get(record.modelId);
@@ -955,17 +1256,54 @@ export class BeeLayer {
       }
     }
     this.outlineState.active = this._outlinedThisFrame;
+    /* 拾取代理同步 + 群体级早退球（D1/D2b）：与图元路径同一挂点语义（定档之后、姿态已算） */
+    this.syncPickProxies(t, this._liveRecords);
   }
 
   /** 拾取：实例 → 蜂记录（含 id）。三档全部可拾取（拾取语义 SHALL NOT 随档位变化，
-   *  design.md D9）：(桶网格, instanceId) → 桶记录表（T0/T1 当帧序号、T2 槽位）。 */
+   *  design.md D9）：(桶网格, instanceId) → 桶记录表（T0/T1 当帧序号、T2 槽位）。
+   *  **代理网格**（`userData.pick.tier = TIER_NEAR`）的实例号是「紧凑段（NEAR 段
+   *  `0..nearN-1` → MID 段 `nearN..nearN+midN-1`）+ 远档段（`farOffset..`）」三段拼接
+   *  （`syncPickProxies` 维护 `farOffset`），故除空槽/越界外恒可解析：先按 NEAR 段、
+   *  再按 MID 段（号 − NEAR 计数）、最后按远档块（号 − farOffset）查表。两段不重叠 ⇒
+   *  实例号全域无歧义（同帧既有近档蜂又有远档蜂时不会解析到错蜂）。可见桶网格
+   *  （`tier ≠ NEAR`）不变：其网格与档位一一对应，越界实例本就应返回 null。 */
   beeAt(mesh, instanceId) {
     const pick = mesh?.userData?.pick;
     if (!pick) return null;
-    return pick.buckets.records[pick.tier][instanceId] ?? null;
+    const proxy = pick.tier === TIER_NEAR;
+    const buckets = pick.buckets;
+    const direct = buckets.records[pick.tier][instanceId] ?? null;
+    if (direct) return direct;
+    if (!proxy) return null;
+    const nearN = buckets.counts[TIER_NEAR];
+    if (instanceId >= nearN) {
+      const midRec = buckets.records[TIER_MID][instanceId - nearN] ?? null;
+      if (midRec) return midRec;
+    }
+    const slot = instanceId - (buckets.farOffset ?? 0);
+    return slot >= 0 ? buckets.records[TIER_FAR][slot] ?? null : null;
   }
 
-  /** 场景拾取对象（承载 instanceId 的网格）：三档桶网格（GLB 路径为三档全部部件）。 */
+  /**
+   * 群体级早退（D1 收敛项，供 `interact.pick` 入场前调用一次）：射线连当帧候选群体的
+   * 包围球都不碰时返回 true → 调用方跳过全部蜂网格的逐实例求交。球由帧路径 O(N)
+   * 维护（`syncPickProxies`），**指针事件路径内零计算**（SHALL NOT 在事件路径重算）。
+   * 球为空集（无可拾取蜂）时同样返回 true——无蜂可命中，逐网格求交必然全空。
+   */
+  pickRejects(ray) {
+    if (this._pickSphere.radius < 0) return true; // 空集哨兵
+    this._pickScratch.copy(this._pickSphere).applyMatrix4(this.group.matrixWorld);
+    return ray.intersectsSphere(this._pickScratch) === false;
+  }
+
+  /** 场景拾取对象（承载 instanceId 的网格）：桶/部件网格 + **拾取代理**（热区宽容，
+   *  覆盖两条通路与全部三档）。顺序无关语义——`interact.pick` 跨网格取**最近命中**
+   *  （桶拆分后网格顺序本就不对应距离），故代理一律**追加在尾部**，不制造「代理先测
+   *  即省算」的错觉。
+   *  **注**：代理球与模型部件几何同径（皆经 BEE_RADIUS 归一）⇒ 本路径下两者都要遍历
+   *  全部实例、命中时都要逐实例求交——代理**不承担剪枝职责**，其价值在热区与「模型
+   *  就绪前的图元通路也始终有正确的拾取几何」（design D2）。 */
   pickMeshes() {
     if (this.modelReady) {
       const meshes = [];
@@ -975,12 +1313,16 @@ export class BeeLayer {
           for (const part of tierParts) meshes.push(part.mesh);
         }
       }
-      if (meshes.length) return meshes;
+      if (meshes.length) {
+        meshes.push(this.pickMesh);
+        return meshes;
+      }
     }
     const meshes = [];
     for (const tierParts of this.buckets.tierParts) {
       for (const part of tierParts) meshes.push(part.mesh);
     }
+    meshes.push(this.pickMesh);
     return meshes;
   }
 
@@ -1021,6 +1363,10 @@ export class BeeLayer {
     }
     this.group.remove(this.wings);
     this.wings.dispose();
+    /* 拾取代理网格与其球体几何（材质共享 bodyMat，归本层所有、在下方统一释放） */
+    this.group.remove(this.pickMesh);
+    this.pickMesh.dispose();
+    this.pickGeom.dispose();
     /* 蜂遮罩网格从共享 maskScene 移除并释放几何引用（maskMaterial 归 scene 所有，不在此释放）。 */
     for (const mask of [this.maskBody, this.maskAbd]) {
       this.maskScene.remove(mask);

@@ -11,7 +11,11 @@
  *    定型时刻读开关，拖拽中途切开关不改变当前手势；右键单击（未过阈值）= 巢/蜂
  *    右键菜单，不受开关影响；中键拖 = pan 兜底平移（任意开关态）；滚轮（含触控板
  *    捏合 ctrl+wheel）= 指针处缩放；单击 = 选中；拾取优先级 蜜蜂 > 巢 > 瓦片，
- *    ≥5px 位移阈值区分点击/拖拽；
+ *    ≥5px 位移阈值区分点击/拖拽；**单击（含右键菜单）判型取 pointerdown 时刻的拾取
+ *    结果**（bee-pick-and-marquee-focus D3：不再 pointerup 二次拾取，防移动靶）；
+ *  - 蜂拾取（bee-pick-and-marquee-focus D1/D2）：`pick()` 入场前经 `bees.pickRejects(ray)`
+ *    做一次群体级早退（当帧候选群体球由帧路径维护，事件路径零重算）；蜂网格集合含
+ *    不可见拾取代理（宽容热区，覆盖两条通路全档）；
  *  - 拖拽一律 setPointerCapture，pointercancel / Escape 统一取消（防指针移出画布
  *    后拖拽悬挂）；
  *  - 搬巢 ghost：红/绿高亮 + 吸附，落定校验（hexDist 公式）回调宿主写布局；
@@ -83,18 +87,25 @@ export class GestureController {
 
   pick(p) {
     this.setNdc(p);
-    // 蜜蜂（LOD 三档 per-tier 桶网格：跨网格取**最近**命中——桶拆分后网格顺序不再对应
-    // 距离；(mesh, instanceId) → 桶记录表解析，三档拾取语义一致）
-    let bestBee = null;
-    for (const mesh of this.bees.pickMeshes()) {
-      const hits = this.raycaster.intersectObject(mesh, false);
-      if (hits.length > 0 && (!bestBee || hits[0].distance < bestBee.distance)) bestBee = hits[0];
-    }
-    if (bestBee) {
-      const record = this.bees.beeAt(bestBee.object, bestBee.instanceId);
-      if (record) {
-        if (record.origin === "subagent") return { kind: "drone", id: record.id, face: record, point: bestBee.point };
-        return { kind: "bee", id: record.id, face: record, point: bestBee.point };
+    // 蜜蜂（LOD 三档 per-tier 桶网格 + 拾取代理：跨网格取**最近**命中——桶拆分后网格
+    // 顺序不再对应距离；(mesh, instanceId) → 桶记录表解析，三档拾取语义一致）。
+    // 群体级早退（bee-pick-and-marquee-focus D1）：静态全场球关闭了图元通路的
+    // raycast early-out，逐实例求交成本（O(蜂数)/网格）落在**按 pointermove 频率
+    // 执行的 hover 路径**上 ⇒ 入场前先用帧路径维护的当帧候选群体球拒绝一次，射线
+    // 落在蜂群之外（天空/远景/空白瓦片等多数落点）直接跳过全部蜂网格。
+    // `pickRejects` 缺省（既有桩/测试替身）视为「不拒绝」，行为与变更前逐字一致。
+    if (this.bees.pickRejects?.(this.raycaster.ray) !== true) {
+      let bestBee = null;
+      for (const mesh of this.bees.pickMeshes()) {
+        const hits = this.raycaster.intersectObject(mesh, false);
+        if (hits.length > 0 && (!bestBee || hits[0].distance < bestBee.distance)) bestBee = hits[0];
+      }
+      if (bestBee) {
+        const record = this.bees.beeAt(bestBee.object, bestBee.instanceId);
+        if (record) {
+          if (record.origin === "subagent") return { kind: "drone", id: record.id, face: record, point: bestBee.point };
+          return { kind: "bee", id: record.id, face: record, point: bestBee.point };
+        }
       }
     }
     // 蜜杯
@@ -338,33 +349,38 @@ export class GestureController {
         else this.callbacks.onDragCancel?.();
         return;
       }
-      /* 单击（未过阈值） */
+      /* 单击（未过阈值）：**按下判型**（bee-pick-and-marquee-focus D3）——目标取
+         pointerdown 时刻的拾取结果 `downHit`，SHALL NOT 在 pointerup 二次拾取。
+         理由：≥5px 位移阈值已区分点击/拖拽，位移未过阈值即「按下时指着的对象」=
+         用户意图；忙碌蜂低巡 + 悬停轻晃使 down→up 间蜂体漂移数像素，二次拾取会把
+         点击漏给巢墙（症状①的叠加因素）。左键单击与右键菜单两分支共用同一 `hit`，
+         一次改到位无遗留；Esc / pointercancel 路径在此分支之前返回，语义不变。 */
       if (!moved) {
-        const upHit = this.pick(p);
+        const tap = hit ?? { kind: "void", id: null, point: null };
         if (event.button === 0) {
-          if (upHit.kind === "bee") {
+          if (tap.kind === "bee") {
             /* 降级停驻蜂 = 无人机（droneStandIn 独立标记，SHALL NOT 动 origin 分类
                F3）：单击无动作（spec「无人机 SHALL NOT 可选中，含降级停驻蜂」）。 */
-            if (!upHit.face?.droneStandIn) this.callbacks.onSelectBee?.(upHit.id, upHit.face);
-          } else if (upHit.kind === "drone") {
+            if (!tap.face?.droneStandIn) this.callbacks.onSelectBee?.(tap.id, tap.face);
+          } else if (tap.kind === "drone") {
             /* 无人机不可选中（hive-interaction-polish 4.1/D2）：单击无动作——
                onSelectDrone 调用路径移除（回调签名保留兼容）；hover tips 与双击聚焦
                保持（拾取分类/悬停分支不动，备选否决见设计 D2）。 */
-          } else if (upHit.kind === "cup") {
-            this.callbacks.onSelectCup?.(upHit.id, upHit.workspaceId, upHit.face);
-          } else if (upHit.kind === "studio") {
-            this.callbacks.onSelectStudio?.(upHit.id);
-          } else if (upHit.kind === "ground") {
+          } else if (tap.kind === "cup") {
+            this.callbacks.onSelectCup?.(tap.id, tap.workspaceId, tap.face);
+          } else if (tap.kind === "studio") {
+            this.callbacks.onSelectStudio?.(tap.id);
+          } else if (tap.kind === "ground") {
             /* 单击空白地面瓦片 → 按落点反算格坐标选中（design.md D4）。 */
-            const cell = cellOf(upHit.point.x, upHit.point.z);
+            const cell = cellOf(tap.point.x, tap.point.z);
             this.callbacks.onSelectTile?.(cell);
-          } else if (upHit.kind === "void") {
+          } else if (tap.kind === "void") {
             /* 天空/空白 → 取消选中（design.md D7）。 */
             this.callbacks.onClearSelection?.();
           }
         } else if (event.button === 2) {
-          if (upHit.kind === "studio") this.callbacks.onStudioMenu?.(upHit.id, p);
-          else if (upHit.kind === "bee") this.callbacks.onBeeMenu?.(upHit.id, p);
+          if (tap.kind === "studio") this.callbacks.onStudioMenu?.(tap.id, p);
+          else if (tap.kind === "bee") this.callbacks.onBeeMenu?.(tap.id, p);
         }
       }
       this.downHit = null;

@@ -2735,7 +2735,12 @@ function HivePage(props) {
 
   /* ── 情境道具栏（context-hotbar-rework 6.x / add-proposal-panel 5.4）：四态门控 ── */
   const layout = sanitizeLayout(settings.layout); // 写读两侧净房，保证 m/n 恒在界内
-  const hotbarKind = resolveHotbarKind({ selection, selectedBee, floatOpen, selectedProposal });
+  /* 框选多选激活位（bee-pick-and-marquee-focus D5）：多选集非空 → 道具栏整栏短路
+     （防「归档会话」等以陈旧 current 为目标的动作误伤）。marqueeStore 经上方
+     useSyncExternalStore 订阅，提交/清空/离场收敛即触发本派生点重算——无需新增 hook；
+     门控值在此单点派生（下方面板段复用同一布尔，防两处口径漂移）。 */
+  const marqueeActive = marqueeStore.getSet().size > 0;
+  const hotbarKind = resolveHotbarKind({ selection, selectedBee, floatOpen, selectedProposal, marqueeActive });
 
   /* 提案选中/取消（5.4）：点卡选中、再点同一卡取消；**清场景选中**是「选提案即离开
      场景情境」的最短路径（不调 scene.select——那会占用场景选中槽）。 */
@@ -2984,7 +2989,7 @@ function HivePage(props) {
   void worldVersion; // 订阅即目的：世界派生 tick 时重算 panelStudio 与多选卡内容
   const marqueeSet = marqueeStore.getSet();
   let panelMarqueeBees = null;
-  if (marqueeSet.size > 0) {
+  if (marqueeActive) {
     const beeById = new Map();
     for (const studio of sceneWorld?.studios ?? []) {
       for (const bee of studio.bees ?? []) {

@@ -307,7 +307,13 @@ for (let f = 0; f < FRAMES; f++) layer.frame(16, farCam);
 const frameMsFar = (performance.now() - t0) / FRAMES;
 console.log(`BeeLayer.frame 远景 T2 主导: ${frameMsFar.toFixed(3)}ms/帧 × ${FRAMES} 帧（冻结期零矩阵重写）`);
 ok(frameMsFar < 2, `千蜂远景单帧写入 < 2ms（实测 ${frameMsFar.toFixed(3)}ms，任务 6.2 定标）`);
-ok(frameMsFar < Math.max(frameMsAll, 0.02) * 0.5, `远景成本 < 全近档实测 50%（相对断言跨机器稳定：${frameMsFar.toFixed(3)} vs ${frameMsAll.toFixed(3)}）`);
+/* 相对断言（bee-pick-and-marquee-focus 定稿修订）：拾取代理（D2/D2b）为「远档蜂同样具备
+   宽容热区」把代理矩阵纳入 T2 帧路径（design 已知取舍②：T2「冻结」的省算范围收窄为
+   「动画/着色计算」），且早退球 / 记录表 / 档位复核是 O(N) 全档维护 ⇒ 远景帧相对全近档
+   的比例自然上抬（实测 0.19 vs 0.26 ≈ 72%，基线 0.057 vs 0.201 ≈ 28%）。绝对预算
+   （2ms / 4ms）与「远景显著低于近景」的定性关系仍成立，故相对阈值按实测余量放宽到
+   0.9×（跨机器稳定；若回归到「远景≈全近档」量级即失败）。 */
+ok(frameMsFar < Math.max(frameMsAll, 0.02) * 0.9, `远景成本 < 全近档实测 90%（相对断言跨机器稳定：${frameMsFar.toFixed(3)} vs ${frameMsAll.toFixed(3)}；代理使 T2 省算范围收窄，见 design 取舍②）`);
 
 /* (b2) 描边集合渲染预算（hive-marquee-and-card-rework 3.3）：整群描边（远档蜂
     强制近档 + 遮罩集合逐只写入）单帧 < 4ms——遮罩膨胀 pass 单次复用，pass 成本
@@ -397,6 +403,56 @@ function eq2(actual, expected, message) {
   linkLayer.frame({ hover: { kind: "bee", id: hoverId }, selectedId: null, bees: layer });
   ok(!linkLayer.beeDrone.lines.visible || linkLayer.beeDrone.pairs > 0, "命中路径可见集写入（pairs>0 或无无人机回隐）");
   linkLayer.dispose();
+}
+
+/* ── 指针事件路径预算（bee-pick-and-marquee-focus 任务 6.1）：hover 拾取成本 ──
+   `pick()` 在**无按压 hover 路径**上按 `pointermove` 频率执行（interact.mjs 无按压分支），
+   SHALL NOT 按「点击才跑」估算。本项在千蜂规模下采样单次 `pick()` 的两条路径：
+     · 射线落在蜂群之外 → 群体级早退（D1）直接拒绝，**零逐实例求交**；
+     · 射线命中蜂群 → 最坏路径（逐网格逐实例球测试）。
+   预算取 `interact.pick` 的实际形态（`bees.pickRejects` + 逐网格 `intersectObject`），
+   代理网格已含在 `pickMeshes()` 内（热区宽容的代价即计入本预算）。 */
+{
+  const raycaster = new THREE.Raycaster();
+  const down = new THREE.Vector3(0, -1, 0);
+  const proxy = layer.pickMesh;
+  /* 命中蜂群的落点：原点巢区一只蜂的正上方（originBee 可能为空则取渲染集首条） */
+  const target = originBee ?? layer.renderList[0];
+  const hitRay = new THREE.Raycaster(new THREE.Vector3(target.x, 60, target.z), down);
+  const farRay = new THREE.Raycaster(new THREE.Vector3(4000, 60, 4000), down);
+  const pickOnce = (ray) => {
+    if (layer.pickRejects(ray.ray) === true) return null;
+    let best = null;
+    for (const mesh of layer.pickMeshes()) {
+      const hits = raycaster.intersectObject(mesh, false);
+      if (hits.length > 0 && (!best || hits[0].distance < best.distance)) best = hits[0];
+    }
+    return best;
+  };
+  ok(layer.pickRejects(farRay.ray) === true, "蜂群外落点被群体级早退拒绝（零逐实例求交）");
+  ok(layer.pickRejects(hitRay.ray) === false, "蜂群内落点通过早退（进入逐网格求交）");
+  ok(pickOnce(hitRay) !== null, "命中路径确实返回命中（预算测的是真实最坏路径）");
+  const SAMPLES = 300;
+  for (let i = 0; i < 30; i++) {
+    pickOnce(farRay);
+    pickOnce(hitRay);
+  }
+  let t = performance.now();
+  for (let i = 0; i < SAMPLES; i++) pickOnce(farRay);
+  const pickOutMs = (performance.now() - t) / SAMPLES;
+  t = performance.now();
+  for (let i = 0; i < SAMPLES; i++) pickOnce(hitRay);
+  const pickInMs = (performance.now() - t) / SAMPLES;
+  console.log(`pick() 千蜂（${bees.length} 蜂）蜂群外: ${pickOutMs.toFixed(4)}ms/次 × ${SAMPLES}`);
+  console.log(`pick() 千蜂（${bees.length} 蜂）蜂群内（最坏）: ${pickInMs.toFixed(4)}ms/次 × ${SAMPLES}`);
+  /* 预算（任务 6.1 基线，60fps 单帧 16.7ms；hover 每 pointermove 一次，120Hz 下 8.3ms 间隔）：
+     蜂群外早退 ≤ 0.02ms（纯一次射线-球）；蜂群内最坏 ≤ 1.5ms（逐实例球测试，含代理）。
+     任一项超预算按 design D1 退路改「布局重建 / modelReady 翻转时重算紧球」并把实测值
+     回写 design 风险表。 */
+  ok(pickOutMs < 0.02, `蜂群外 hover 拾取 ≤ 0.02ms（实测 ${pickOutMs.toFixed(4)}ms：群体级早退把成本收敛为一次射线-球）`);
+  ok(pickInMs < 1.5, `蜂群内 hover 拾取（最坏路径）≤ 1.5ms（实测 ${pickInMs.toFixed(4)}ms）`);
+  ok(pickOutMs < pickInMs, `早退路径显著低于最坏路径（${pickOutMs.toFixed(4)}ms vs ${pickInMs.toFixed(4)}ms：早退确有收敛作用）`);
+  void proxy;
 }
 
 layer.dispose();

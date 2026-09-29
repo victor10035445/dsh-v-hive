@@ -282,14 +282,23 @@ export function effectiveHotbarSlots(kind, userSlots, t) {
  * 提案选中 → studio > tile > 蜂栏；蜜杯选中与清选中（且无当前会话蜂、无提案选中）
  * → null。
  *
+ * **框选多选激活门控（bee-pick-and-marquee-focus D5）**：`marqueeActive` 为真时
+ * **函数首部短路**返回 `null`（任何栏不渲染，含浮窗/提案态）——框选多选集非空期间，
+ * 以当前会话为隐式目标的动作（蜂栏内置「归档会话」「打开会话」卡等）SHALL NOT 可达，
+ * 误关旧会话的通道被物理切断。与「蜜杯选中 / 清选中 / 浮窗开启 → 不渲染」同一机制
+ * （整栏短路，SHALL NOT 卡片级禁用）；多选集清空后按既有三态门控即时恢复。
+ * 缺省/false 时行为与未引入本入参前**逐字节一致**（向后兼容）。
+ *
  * **提案选中 SHALL NOT 写入场景选中槽**（`selectionStore` / `scene.select`）——
  * 占用该槽会令 `workerBeeIdOf` 恒返回 null（本文件 :270 的 `if (selection) return null`），
  * 直发通道的目标蜂随之失效；本函数保持纯净（纯入参，无副作用）。
  *
  * @param {{selection?: object|null, selectedBee?: string|null, floatOpen?: boolean,
- *          selectedProposal?: {workspaceId: string, name: string}|null}} [input]
+ *          selectedProposal?: {workspaceId: string, name: string}|null,
+ *          marqueeActive?: boolean}} [input]
  */
-export function resolveHotbarKind({ selection, selectedBee, floatOpen, selectedProposal } = {}) {
+export function resolveHotbarKind({ selection, selectedBee, floatOpen, selectedProposal, marqueeActive } = {}) {
+  if (marqueeActive) return null; // 框选激活 → 整栏不渲染（首部短路，先于浮窗/提案）
   if (floatOpen) return null;
   if (selectedProposal?.workspaceId && selectedProposal?.name) return "proposal";
   const kind = selection?.kind;

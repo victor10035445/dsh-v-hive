@@ -11,6 +11,8 @@
  *  - 覆盖面板 WorkerPanel：cellIndex 排序、无人机不出卡、空态、占位零交互、
  *    点卡 onPickBee 链路；
  *  - 左纵排模态：设置/指令编辑 rail 三节渲染 + guardRef 干净关闭路径；
+ *  - 框选门控（bee-pick-and-marquee-focus 5.2）：从 **lib/client.js 产物**抽出打包后的
+ *    道具栏门控函数本体直测 `marqueeActive` 短路（渲染层「整栏不渲染」的产物级锚点）；
  *  - 保存链路：ctl().actions.saveHotbars → PUT（409 重放，hotbars 整体替换）。
  * 运行：node test/hotbars-ui-smoke.mjs（先 node build.mjs）
  */
@@ -398,6 +400,83 @@ eq(collect(defBeeCapped, (n) => n.tag === "button").map((b) => b.props.children.
 eq(HotbarBar({ t, kind: null, slots: [], layout: layout0 }), null, "kind null → 不渲染（路径不变）");
 eq(HotbarBar({ t, kind: "hive", slots: [], layout: layout0 }), null, "有效槽位空数组 → 不渲染（紧凑路径不变）");
 eq(HotbarBar({ t, kind: "hive", slots: effectiveHotbarSlots("hive", [], t), layout: layout0, disabled: false, summonBusy: false, floorBusy: false, bridgeReady: true, onSlot: () => {} }), null, "巢栏空骨架派生空数组 → 不渲染");
+
+/* ── 2b. 框选多选门控（bee-pick-and-marquee-focus 5.2）——规格措辞为「误伤通道物理
+   切断」，纯函数真值表不足以支撑，故本条做**渲染层 + 产物级**两层锚定 ──
+   (a) 渲染层：`kind = null` ⇒ 道具栏整栏不渲染（无 `.jyv-hotbar`、无任何 `.jyv-hbCard`
+       ——内置「归档会话」卡随之物理不可达）；
+   (b) 产物级：从 `lib/client.js` 抽出**打包后的门控函数本体**直测——`marqueeActive`
+       真必须短路为 null（含浮窗/提案/巢/地板/蜂栏各态叠加），假/缺省时既有判定次序
+       逐项不变。单元测试测的是 `src/hotbars.mjs`；本项测的是页面真正调用的那一份，
+       故「派生点确实把 `marqueeActive` 传进门控」这一静默回归点被产物锁定。 */
+{
+  const beeSlot = { id: "b1", name: "蜂卡", prompt: "p", autoSend: false };
+  const barProps = { t, slots: [beeSlot], layout: layout0, disabled: false, summonBusy: false, floorBusy: false, bridgeReady: true, onSlot: () => {} };
+  const beeBar = render(HotbarBar({ ...barProps, kind: "bee" }));
+  ok(collect(beeBar, (n) => n.tag === "div" && String(n.props.className ?? "").includes("jyv-hotbar")).length === 1, "（对照）kind = bee + 有槽位 → 道具栏在场");
+  ok(collect(beeBar, (n) => n.tag === "button").length >= 1, "（对照）蜂栏呈现卡片");
+  eq(HotbarBar({ ...barProps, kind: null }), null, "kind = null → 道具栏整栏不渲染（门控的渲染层语义）");
+  const noBar = render(HotbarBar({ ...barProps, kind: null }));
+  eq(collect(noBar, (n) => String(n.props?.className ?? "").includes("jyv-hotbar")).length, 0, "kind = null → 树中无 .jyv-hotbar（整栏消失）");
+  eq(collect(noBar, (n) => String(n.props?.className ?? "").includes("jyv-hbCard")).length, 0, "kind = null → 树中无任何 .jyv-hbCard（内置「归档会话」卡不可达）");
+  /* 产物级抽取：`resolveHotbarKind` 被 esbuild 内联、原名不存——按参数形状定位整段
+     （参数解构 + body；body 内无花括号嵌套），并保留**产物原名**（如 `marqueeActive:s`）
+     重建同一函数：按 `名:标识符` 取参数序，body 原样作函数体（两者同属一个最小化作用域）。 */
+  /* 未声明标识符护栏（real bug，实盘复现）：本次实施曾在 `attachScene` 里写入
+     `sceneProxy.onSelectionChange = …`——该名字只是页面渲染冒烟沙箱里的替身，
+     **源文件里从未声明**；esbuild 把它当全局引用照样打包成功，运行时 `attachScene`
+     直接 `ReferenceError` ⇒ 3D 场景挂载失败、整页进 WebGL 降级卡（Node 冒烟全绿也
+     抓不到）。故此处对产物做一次「沙箱专有标识符」扫描：它们**只允许出现在 test/
+     里**，一旦泄漏进 lib/client.js 即失败。 */
+  for (const leaked of ["sceneProxy", "ctlWithWorld", "realCtl"]) {
+    eq(code.includes(leaked), false, `产物中不含测试替身标识符 \`${leaked}\`（未声明全局引用的实盘护栏）`);
+  }
+  const gateMatch = code.match(/selection:[^}]*marqueeActive:([A-Za-z_$][\w$]*)\}=\{\}\)\{([^{}]*)\}/);
+  ok(gateMatch, "从 lib/client.js 抽出打包后的道具栏门控函数本体（产物级锚点；抽取失效即告警）");
+  const gateHead = gateMatch[0].slice(0, gateMatch[0].indexOf("}={})"));
+  const gateParams = [...gateHead.matchAll(/(\w+):([A-Za-z_$][\w$]*)(?=[,}]|$)/g)].map((x) => x[2]);
+  eq(gateParams.length, 5, `产物门控函数参数序还原（selection/selectedBee/floatOpen/selectedProposal/marqueeActive → ${gateParams.join(",")}）`);
+  const gateFn = new Function(...gateParams, gateMatch[2]);
+  const gateOf = ({ selection, selectedBee, floatOpen, selectedProposal, marqueeActive } = {}) =>
+    gateFn(selection, selectedBee, floatOpen, selectedProposal, marqueeActive);
+  /* 透传锚点（**独立于参数名**：缺失透传时该对象字面量只剩四路，本项即失败）：
+     `marqueeActive` 在产物中应恰有「门控函数参数位」与「派生点调用处」两处对象字面量，
+     调用处形态为 `{selection:…,selectedBee:…,floatOpen:…,selectedProposal:…,marqueeActive:…}`
+     （参数位紧跟 `=` 起默认值，据此排除）。 */
+  const literalPattern = /\{[^{}]*selection:[^{}]*selectedBee:[^{}]*floatOpen:[^{}]*selectedProposal:[^{}]*marqueeActive:[^{}]*\}/g;
+  const gateCallSites = [];
+  for (const literal of code.matchAll(literalPattern)) {
+    if (code[literal.index + literal[0].length] === "=") continue; // 参数位（`…}={}`）
+    gateCallSites.push(literal[0]);
+  }
+  eq(gateCallSites.length, 1, `产物中门控派生点唯一且透传 marqueeActive（缺失透传即 0 处 → 静默回归点被锁死；实际 ${gateCallSites.length} 处）`);
+  /* 取数锚点（**独立于透传形状**）：产物中按 `getSet().size > 0` 取值的赋值恰好两处
+     （Esc 清多选守卫 + 门控派生），且其中一处赋给的变量正是调用处传入 `marqueeActive`
+     的那个——若实现退化为常量（`!1`）或改指他处，本项即失败。 */
+  const wireIdent = gateCallSites[0].match(/marqueeActive:([A-Za-z_$][\w$]*)/)?.[1] ?? "";
+  const getSetHits = code.split(".getSet().size>0").length - 1;
+  const derivedIds = [...code.matchAll(/([A-Za-z_$][\w$]*)=[^;,]{0,80}\.getSet\(\)\.size>0/g)].map((x) => x[1]);
+  eq(getSetHits, 2, `产物中按「框选多选集非空」取值的表达式恰两处（Esc 守卫 + 门控派生；实际 ${getSetHits} 处）`);
+  ok(
+    wireIdent && derivedIds.includes(wireIdent),
+    `产物派生点 marqueeActive 取数来自框选多选集（${wireIdent || "?"} ∈ {${derivedIds.join(",")}}）`
+  );
+  const pick = { workspaceId: "ws-a", name: "add-foo" };
+  const states = [
+    ["巢选中", { selection: { kind: "studio", id: "ws-1" }, selectedBee: null, floatOpen: false, selectedProposal: null }, "hive"],
+    ["地板选中", { selection: { kind: "tile", id: "4,-2" }, selectedBee: null, floatOpen: false, selectedProposal: null }, "floor"],
+    ["蜂栏", { selection: null, selectedBee: "bee-1", floatOpen: false, selectedProposal: null }, "bee"],
+    ["提案栏", { selection: null, selectedBee: null, floatOpen: false, selectedProposal: pick }, "proposal"],
+    ["蜜杯选中", { selection: { kind: "cup", id: "cup-1" }, selectedBee: "bee-1", floatOpen: false, selectedProposal: null }, null],
+    ["浮窗开", { selection: null, selectedBee: "bee-1", floatOpen: true, selectedProposal: null }, null]
+  ];
+  for (const [label, input, expected] of states) {
+    eq(gateOf({ ...input, marqueeActive: true }), null, `${label}：marqueeActive 真 → 任何栏不渲染（产物级）`);
+    eq(gateOf({ ...input, marqueeActive: false }), expected, `${label}：marqueeActive false → 既有输出不变（产物级）`);
+    eq(gateOf(input), expected, `${label}：marqueeActive 缺省 → 既有输出逐项不变（产物级向后兼容）`);
+  }
+  ok(/marqueeActive/.test(code), "产物中派生点调用处携带 marqueeActive（透传锚点）");
+}
 
 /* ── 3. 覆盖面板 WorkerPanel（7.4） ── */
 eq(WorkerPanel({ t, studio: null, layout: layout0, assignments: {}, beeTypes: [], onPickBee: () => {} }), null, "无巢选中 → 面板不渲染");

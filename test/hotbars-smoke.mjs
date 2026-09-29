@@ -197,6 +197,37 @@ eq(gate(null, null, false, { name: "add-foo" }), null, "提案选中缺 workspac
   eq(pick, { workspaceId: "ws-a", name: "add-foo" }, "调用不改写入参 selectedProposal");
 }
 
+/* ── resolveHotbarKind 的框选门控（bee-pick-and-marquee-focus 5.1）：真值表 ——
+      `marqueeActive` 真 → 任何栏不渲染（首部短路，先于浮窗/提案/巢/地板/蜂栏）；
+      缺省/false → 既有输出**逐项不变**（向后兼容的回归锚点）。 ── */
+{
+  const mGate = (selection, selectedBee, floatOpen, selectedProposal, marqueeActive) =>
+    resolveHotbarKind({ selection, selectedBee, floatOpen, selectedProposal, marqueeActive });
+  const states = [
+    ["巢选中", { selection: { kind: "studio", id: "ws-1" }, selectedBee: null, floatOpen: false, selectedProposal: null }, "hive"],
+    ["地板选中", { selection: { kind: "tile", id: "4,-2" }, selectedBee: null, floatOpen: false, selectedProposal: null }, "floor"],
+    ["蜂栏", { selection: null, selectedBee: "bee-1", floatOpen: false, selectedProposal: null }, "bee"],
+    ["提案栏", { selection: null, selectedBee: null, floatOpen: false, selectedProposal: proposalPick }, "proposal"],
+    ["蜜杯选中", { selection: { kind: "cup", id: "cup-1" }, selectedBee: "bee-1", floatOpen: false, selectedProposal: null }, null],
+    ["清选中", { selection: null, selectedBee: null, floatOpen: false, selectedProposal: null }, null],
+    ["浮窗开", { selection: null, selectedBee: "bee-1", floatOpen: true, selectedProposal: null }, null]
+  ];
+  for (const [label, input, expected] of states) {
+    eq(mGate(input.selection, input.selectedBee, input.floatOpen, input.selectedProposal, true), null, `${label}：marqueeActive 真 → 任何栏不渲染`);
+    eq(mGate(input.selection, input.selectedBee, input.floatOpen, input.selectedProposal, false), expected, `${label}：marqueeActive false → 既有输出不变`);
+    eq(gate(input.selection, input.selectedBee, input.floatOpen, input.selectedProposal), expected, `${label}：marqueeActive 缺省 → 既有输出逐项不变（向后兼容）`);
+  }
+  /* 框选优先于浮窗与提案（首部短路：真值下不得回落到任何具体栏） */
+  eq(mGate(null, "bee-1", true, proposalPick, true), null, "marqueeActive 真 + 浮窗开 → null（浮窗亦不渲染）");
+  eq(mGate({ kind: "studio", id: "ws-1" }, null, false, proposalPick, true), null, "marqueeActive 真 + 提案选中 → null");
+  /* 纯净性：加入本入参后仍不改写入参 */
+  {
+    const selection = { kind: "studio", id: "ws-1" };
+    resolveHotbarKind({ selection, selectedBee: "bee-1", floatOpen: false, selectedProposal: null, marqueeActive: true });
+    eq(selection, { kind: "studio", id: "ws-1" }, "marqueeActive 路径不改写入参 selection");
+  }
+}
+
 /* ── DEFAULT_HOTBAR_SLOTS 骨架形状（hotbar-default-actions 5.1；卡组用户定稿调整） ── */
 /* 巢栏：无默认卡（召唤由用户自定义槽位覆盖，空巢栏不渲染） */
 eq(DEFAULT_HOTBAR_SLOTS.hive, [], "巢栏空骨架——空栏派生空数组 → 道具栏不渲染");
