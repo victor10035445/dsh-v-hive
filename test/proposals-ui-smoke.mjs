@@ -15,6 +15,7 @@
  */
 import { readFileSync } from "node:fs";
 import { resolveHotbarKind } from "../src/hotbars.mjs";
+import { PROPOSAL_ROW_PX, PROPOSAL_STATUSES } from "../src/proposals.mjs";
 
 const code = readFileSync(new URL("../lib/client.js", import.meta.url), "utf8");
 
@@ -62,7 +63,9 @@ const jsxRuntime = {
 const fetchCalls = [];
 let proposalsFixture = [];
 let statusWrites = [];
+let statusesWrites = [];
 let proposalsStatus = 200;
+let statusesStatus = 200;
 async function fetchStub(url, opts = {}) {
   const method = opts.method ?? "GET";
   const body = opts.body ? JSON.parse(opts.body) : null;
@@ -77,6 +80,11 @@ async function fetchStub(url, opts = {}) {
   }
   if (url === "/api/dsh-hive/proposals/status" && method === "POST") {
     statusWrites.push(body);
+    return respond(200, { ok: true });
+  }
+  if (url === "/api/dsh-hive/proposals/statuses" && method === "POST") {
+    statusesWrites.push(body);
+    if (statusesStatus !== 200) return respond(statusesStatus, { error: "bad list", field: "proposalStatuses.0.color", code: "invalid-entry" });
     return respond(200, { ok: true });
   }
   if (url === "/api/dsh-hive/imports/skill-links-buttons") {
@@ -249,13 +257,27 @@ const textOf = (node) => {
   if (typeof node === "object" && node.tag !== undefined) return textOf(node.children);
   return "";
 };
-const t = (key) => key;
+/* i18n 桩：整体恒返回键（断言只看键名），**但带占位符的词条按真实字典插值**——
+   「保存失败」这类词条在真字典里是「状态列表保存失败：{err}」，键名直出会让
+   `replace("{err}", …)` 无靶可打（字段级原因就断在测试桩上而不是实现上）。 */
+const PLACEHOLDER_SAMPLES = {
+  "hive.settings.proposalStatusSaveFailed": "hive.settings.proposalStatusSaveFailed:{err}"
+};
+const t = (key) => (key in PLACEHOLDER_SAMPLES ? PLACEHOLDER_SAMPLES[key] : key);
 
 /* ── 1. 分组渲染 + 空组不渲染 + 组标题回退 + 状态标记 ── */
+/* 状态列表镜像（proposal-panel-config 3.3）：面板经动作面读**有效列表**；缺省 = 出厂四值。 */
+let statusListFixture = null; // null = 未配置（动作面回落出厂四值）
 const panelProps = (over = {}) => ({
   t,
-  ctl: () => ({ actions: { proposalStates: () => ({}), refreshProposals: async () => {} } }),
-  settings: { reportCollapsed: true, reportRows: 8 },
+  ctl: () => ({
+    actions: {
+      proposalStates: () => ({}),
+      proposalStatuses: () => statusListFixture ?? PROPOSAL_STATUSES,
+      refreshProposals: async () => {}
+    }
+  }),
+  settings: { reportCollapsed: true, reportRows: 8, proposalRows: 24 },
   disabled: false,
   selectedProposal: null,
   onSelect: () => {},
@@ -326,9 +348,195 @@ hookCells = []; hookIndex = 0;
   eq(root(expanded).props.style["--jyv-panelBottom"], "calc(76px + " + String(34 + 20 * 24 + 12) + "px)", "展开 20 行 → 让位随报告占位增长（无重叠）");
   eq(root(collapsed).props.role, "group", "role=group（a11y）");
   eq(root(collapsed).props["aria-label"], "hive.proposal.aria", "aria-label 走本地化词条");
+  /* 面板高度（proposal-panel-config 4.2/D5）：行数 → CSS 变量；缺省 24 行、越界净房 */
+  eq(root(collapsed).props.style["--jyv-proposalMaxH"], String(24 * PROPOSAL_ROW_PX) + "px", "缺省 24 行 → --jyv-proposalMaxH = 816px（零回归量级）");
+  /* 可用带变量（用户反馈修正）：`--jyv-proposalBandH` 为**实测可用带**（画布高 − 让位），
+     未测得时（沙箱无 ResizeObserver）退化为行数上限——两条路径都必须在场，
+     CSS 侧 `max-height: min(--jyv-proposalMaxH, --jyv-proposalBandH)` 才恒有值。 */
+  ok(
+    root(collapsed).props.style["--jyv-proposalBandH"] === String(24 * PROPOSAL_ROW_PX) + "px",
+    "无 ResizeObserver 的沙箱 → --jyv-proposalBandH 退化为行数上限（首帧不缺值）"
+  );
+  /* 面板挂 ref（实测可用带的量测挂点）；沙箱里 ref 形如 { current } */
+  ok(root(collapsed).props.ref !== undefined, "面板根节点带 ref（ResizeObserver 量测挂点在场）");
+  hookCells = []; hookIndex = 0;
+  const wide = render(m.ProposalPanel(panelProps({ settings: { reportCollapsed: true, reportRows: 8, proposalRows: 32 } })));
+  eq(root(wide).props.style["--jyv-proposalMaxH"], String(32 * PROPOSAL_ROW_PX) + "px", "32 行 → 上限抬升（滑杆即时生效路径）");
+  hookCells = []; hookIndex = 0;
+  const tiny = render(m.ProposalPanel(panelProps({ settings: { reportCollapsed: true, reportRows: 8, proposalRows: 1 } })));
+  eq(root(tiny).props.style["--jyv-proposalMaxH"], String(3 * PROPOSAL_ROW_PX) + "px", "越界（1 行）→ 净房落回下界 3 行");
+  hookCells = []; hookIndex = 0;
+  const bad = render(m.ProposalPanel(panelProps({ settings: { reportCollapsed: true, reportRows: 8, proposalRows: "x" } })));
+  eq(root(bad).props.style["--jyv-proposalMaxH"], String(24 * PROPOSAL_ROW_PX) + "px", "坏值 → 净房落回默认 24 行");
 }
 
-/* ── 3. 选中互斥（四态门控纯函数，双向） ── */
+/* ── 2b. 卡片标记数据驱动（proposal-panel-config 3.3）：列表外的孤儿戳无标记 ── */
+{
+  /* 当前列表 = [doing]：宿主不再为 reviewed 并出 status（双保险），本地也按列表查色。 */
+  statusListFixture = [{ id: "doing", color: "#4c8f5c", name: "进行中" }];
+  proposalsFixture = [
+    { workspaceId: "ws-a", title: "A", path: "a", changes: [{ name: "add-foo", status: "doing" }, { name: "add-bar", status: "reviewed" }] }
+  ];
+  seed();
+  seed();
+  hookCells = []; hookIndex = 0;
+  const tree = render(m.ProposalPanel(panelProps()));
+  const cards = collect(tree, (n) => String(n.props.className ?? "").includes("jyv-proposalCard"));
+  eq(cards.length, 2, "两张卡都在（孤儿戳卡片保留——数据不删）");
+  eq(collect(tree, (n) => String(n.props.className ?? "").includes("jyv-proposalDot")).length, 1, "色点只落在列表内状态的卡上（孤儿戳无标记）");
+  eq(cards.filter((c) => c.props["data-status"] !== undefined).map((c) => c.props["data-status"]), ["doing"], "data-status 只落列表内状态");
+  ok(textOf(tree).includes("进行中"), "自定义状态按列表条目的字面名呈现（数据驱动名称）");
+  ok(!textOf(tree).includes("reviewed"), "孤儿戳不呈现任何名称（无标记）");
+  const orphanCard = cards.find((c) => textOf(c).includes("add-bar"));
+  eq(orphanCard.props.title, "add-bar", "孤儿戳卡片悬停仅显示 change 名（无状态/时间戳）");
+  /* 列表内状态的悬停：名称 + 时间戳（proposalStates 仍带 at） */
+  hookCells = []; hookIndex = 0;
+  const withStamp = render(
+    m.ProposalPanel(
+      panelProps({
+        ctl: () => ({
+          actions: {
+            proposalStates: () => ({ "ws-a/add-foo": { status: "doing", at: Date.UTC(2026, 0, 2, 3, 4, 5) } }),
+            proposalStatuses: () => statusListFixture,
+            refreshProposals: async () => {}
+          }
+        })
+      })
+    )
+  );
+  const stampedCard = collect(withStamp, (n) => String(n.props.className ?? "").includes("jyv-proposalCard")).find((c) => textOf(c).includes("add-foo"));
+  ok(String(stampedCard.props.title).startsWith("add-foo · 进行中 · "), "有标记卡片悬停 = change 名 · 状态名 · 时间戳");
+  /* 缺省（未配置列表）→ 出厂四值：reviewed 重新成为有效标记 */
+  statusListFixture = null;
+  hookCells = []; hookIndex = 0;
+  const factoryTree = render(m.ProposalPanel(panelProps()));
+  eq(collect(factoryTree, (n) => String(n.props.className ?? "").includes("jyv-proposalDot")).length, 1, "列表缺省回退出厂四值 → reviewed 标记回显（列表即权威）");
+  ok(textOf(factoryTree).includes("hive.proposal.status.reviewed"), "工厂 id 空缺名称 → 走 i18n 词条（英文界面不被中文名绑架）");
+}
+
+/* ── 2c. 设置模态「提案」节（proposal-panel-config 4.1–4.3） ── */
+{
+  const guard = { current: null };
+  const settingsModal = render(
+    m.HiveSettingsModal({
+      t,
+      settings: { layout: { panelM: 2, panelN: 2, barM: 8, barN: 1 }, reportRows: 8, proposalRows: 24 },
+      setSettings: () => {},
+      guardRef: guard,
+      onClose: () => {},
+      ctl: () => ({ actions: { proposalStatuses: () => statusListFixture } })
+    })
+  );
+  const tabs = collect(settingsModal, (n) => n.props?.id && String(n.props.id).startsWith("jyv-railTab-"));
+  eq(
+    tabs.map((n) => n.props.id),
+    ["jyv-railTab-scene", "jyv-railTab-appearance", "jyv-railTab-layout", "jyv-railTab-voice", "jyv-railTab-proposal"],
+    "设置左纵排第五节 = 提案（场景/外观/布局/语音不动）"
+  );
+  /* 提案节面板骨架在场（hidden 属性按当前 section 切；此处只断言节点存在 + tabpanel 语义） */
+  const panel = collect(settingsModal, (n) => n.props?.id === "jyv-railPanel-proposal")[0];
+  ok(Boolean(panel), "提案节 tabpanel 骨架在场");
+  eq(panel.props.role, "tabpanel", "提案节为 tabpanel");
+  eq(panel.props["aria-labelledby"], "jyv-railTab-proposal", "tabpanel 与 nav 项 aria 关联");
+  /* 高度滑杆：行数口径 3–32、即时上报（setSettings 路径） */
+  let patched = null;
+  const body = render(
+    m.ProposalSettingsBody({
+      t,
+      settings: { proposalRows: 24 },
+      setSettings: (p) => { patched = p; },
+      statuses: null
+    })
+  );
+  const slider = collect(body, (n) => n.tag === "input" && n.props.type === "range")[0];
+  eq([slider.props.min, slider.props.max, slider.props.value], [3, 32, 24], "高度滑杆量程 3–32、当前值取净房后的设置");
+  slider.props.onChange({ target: { value: "30" } });
+  eq(patched?.proposalRows, 30, "滑杆调整即时上报（setSettings → localStorage + 面板即时重算）");
+  /* 状态列表编辑器：行式条目（色块 + 名称输入 + 删除）*/
+  const rows = collect(body, (n) => String(n.props.className ?? "").includes("jyv-proposalStatusRow"));
+  eq(rows.length, PROPOSAL_STATUSES.length, "列表缺省 → 呈现出厂四值行（可编辑副本）");
+  const colorInputs = collect(body, (n) => n.tag === "input" && n.props.type === "color");
+  eq(colorInputs.length, PROPOSAL_STATUSES.length, "每行一个 native 取色控件");
+  eq(colorInputs.map((c) => c.props.value), PROPOSAL_STATUSES.map((e) => e.color), "取色初值 = 出厂色（archived 青灰在场）");
+  eq(collect(body, (n) => n.props["data-testid"] === "proposal-status-add").length, 1, "「添加状态」按钮在场");
+  eq(collect(body, (n) => n.props["data-testid"] === "proposal-status-restore").length, 1, "「恢复默认列表」按钮在场");
+  ok(collect(body, (n) => n.props["data-testid"] === "proposal-status-save").length === 1, "「保存到宿主」按钮在场（草稿 + 显式保存形态）");
+  eq(collect(body, (n) => String(n.props.className ?? "").includes("jyv-qcDirty")).length, 0, "刚打开（草稿 = 镜像）→ 无「未保存」提示");
+}
+/* 编辑 → 脏提示 → 保存载荷（整单替换）→ 400 字段级原因呈现 */
+{
+  let savePayload = null;
+  let saveResult = { ok: true };
+  const props = (over = {}) => ({
+    t,
+    settings: { proposalRows: 24 },
+    setSettings: () => {},
+    statuses: null,
+    onSaveStatuses: async (list) => { savePayload = list; return saveResult; },
+    ...over
+  });
+  /* 编辑名称：草稿脏 → hint 出现；保存载荷不含空名键、含编辑后的名称 */
+  hookCells = []; hookIndex = 0;
+  render(m.ProposalSettingsBody(props()));
+  hookIndex = 0;
+  const first = render(m.ProposalSettingsBody(props()));
+  const nameInput = collect(first, (n) => n.props["data-testid"] === "proposal-status-name-0")[0];
+  nameInput.props.onChange({ target: { value: "  我的审阅  " } });
+  hookIndex = 0;
+  const dirtyTree = render(m.ProposalSettingsBody(props()));
+  eq(collect(dirtyTree, (n) => String(n.props.className ?? "").includes("jyv-qcDirty")).length, 1, "有未保存改动 → 脏提示出现（不被镜像覆盖）");
+  savePayload = null;
+  await collect(dirtyTree, (n) => n.props["data-testid"] === "proposal-status-save")[0].props.onClick();
+  eq(savePayload?.length, PROPOSAL_STATUSES.length, "保存 → 整单替换（一次提交，条目数与草稿一致）");
+  eq(savePayload?.[0], { id: "reviewed", color: "#e8a63c", name: "我的审阅" }, "载荷条目 trim 后携带 name");
+  eq(savePayload?.[3], { id: "archived", color: "#7d8ca3" }, "空名条目不带 name 键（走名称回退链）");
+  /* 400 → 字段级原因呈现且草稿保持 */
+  saveResult = { ok: false, error: "invalid proposal statuses payload", field: "proposalStatuses.0.color", code: "invalid-entry" };
+  hookCells = []; hookIndex = 0;
+  render(m.ProposalSettingsBody(props()));
+  hookIndex = 0;
+  const failTree = render(m.ProposalSettingsBody(props()));
+  await collect(failTree, (n) => n.props["data-testid"] === "proposal-status-save")[0].props.onClick();
+  hookIndex = 0;
+  const errTree = render(m.ProposalSettingsBody(props()));
+  const alert = collect(errTree, (n) => n.props.role === "alert")[0];
+  ok(Boolean(alert), "保存失败 → 错误提示呈现（role=alert）");
+  ok(textOf(alert).includes("proposalStatuses.0.color"), "400 字段级路径透出（用户可据此就地修正）");
+  ok(textOf(alert).includes("invalid-entry"), "具名原因（code）随字段级路径一并透出");
+  eq(collect(errTree, (n) => String(n.props.className ?? "").includes("jyv-proposalStatusRow")).length, PROPOSAL_STATUSES.length, "失败后草稿保持（不清空、不回退）");
+  /* 成功 → 成功提示（列表已保存） */
+  saveResult = { ok: true };
+  hookCells = []; hookIndex = 0;
+  render(m.ProposalSettingsBody(props()));
+  hookIndex = 0;
+  const okTree = render(m.ProposalSettingsBody(props()));
+  await collect(okTree, (n) => n.props["data-testid"] === "proposal-status-save")[0].props.onClick();
+  hookIndex = 0;
+  const savedTree = render(m.ProposalSettingsBody(props()));
+  ok(textOf(savedTree).includes("hive.settings.proposalStatusSaved"), "保存成功 → 成功提示词条呈现");
+  /* 添加 / 删除 / 恢复默认：草稿操作（仍需保存落盘） */
+  hookCells = []; hookIndex = 0;
+  render(m.ProposalSettingsBody(props()));
+  hookIndex = 0;
+  const addTree = render(m.ProposalSettingsBody(props()));
+  collect(addTree, (n) => n.props["data-testid"] === "proposal-status-add")[0].props.onClick();
+  hookIndex = 0;
+  const addedTree = render(m.ProposalSettingsBody(props()));
+  eq(collect(addedTree, (n) => String(n.props.className ?? "").includes("jyv-proposalStatusRow")).length, PROPOSAL_STATUSES.length + 1, "「添加状态」→ 草稿多一行（本地 id 生成）");
+  collect(addedTree, (n) => n.props["data-testid"] === "proposal-status-remove-0")[0].props.onClick();
+  hookIndex = 0;
+  const removedTree = render(m.ProposalSettingsBody(props()));
+  eq(collect(removedTree, (n) => String(n.props.className ?? "").includes("jyv-proposalStatusRow")).length, PROPOSAL_STATUSES.length, "「删除」→ 草稿少一行（仅草稿，未落盘）");
+  collect(removedTree, (n) => n.props["data-testid"] === "proposal-status-restore")[0].props.onClick();
+  hookIndex = 0;
+  const restoredTree = render(m.ProposalSettingsBody(props()));
+  eq(
+    collect(restoredTree, (n) => n.tag === "input" && n.props.type === "color").map((c) => c.props.value),
+    PROPOSAL_STATUSES.map((e) => e.color),
+    "「恢复默认列表」= 草稿整单替换为出厂四值（仍需保存落盘）"
+  );
+}
+
 const gate = (input) => resolveHotbarKind(input);
 const pick = { workspaceId: "ws-a", name: "add-foo" };
 eq(gate({ selectedProposal: pick }), "proposal", "提案选中 → 提案栏");
@@ -349,7 +557,8 @@ eq(gate({ selectedBee: "b1" }), "bee", "清提案选中 → 回落蜂栏");
   eq(picked, { workspaceId: "ws-a", name: "add-foo" }, "点卡 onSelect 载荷 = { workspaceId, name }（不进文档/不进场景槽）");
 }
 
-/* ── 4. 编辑器第四节 = 提案栏 + 状态下拉受限枚举 ── */
+/* ── 4. 编辑器第四节 = 提案栏 + 状态下拉**读镜像列表**（proposal-panel-config 4.4） ── */
+const hbStatusList = [{ id: "doing", color: "#4c8f5c", name: "进行中" }, { id: "reviewed", color: "#e8a63c" }];
 const modalProps = (over = {}) => ({
   t,
   hotbars: { hive: [], bee: [], floor: [], proposal: [{ id: "p1", name: "继续推进", summon: true, prompt: "推进 {change}", autoSend: true, setStatus: "reviewed" }] },
@@ -361,6 +570,7 @@ const modalProps = (over = {}) => ({
   onNotify: () => {},
   modelCatalog: { groups: [] },
   modelState: "ready",
+  ctl: () => ({ actions: { proposalStatuses: () => hbStatusList } }),
   ...over
 });
 hookCells = []; hookIndex = 0;
@@ -386,16 +596,59 @@ const propForm = render(m.HotbarsModal(modalProps()));
   ok(labelText.includes("hive.hb.setStatus"), "提案栏表单含「状态置位」字段");
   const statusLabel = labels.find((n) => textOf(n).includes("hive.hb.setStatus"));
   const select = collect(statusLabel, (n) => n.tag === "select")[0];
-  eq(collect(select, (n) => n.tag === "option").map((o) => o.props.value), ["", "reviewed", "executed", "paused"], "状态下拉 = 受限枚举（不设置 + 三状态，无自由文本）");
+  eq(collect(select, (n) => n.tag === "option").map((o) => o.props.value), ["", "doing", "reviewed"], "状态下拉读**镜像列表**（首项「不设置」+ 列表条目；无自由文本）");
   eq(collect(select, (n) => n.tag === "option").map((o) => textOf(o)), [
-    "hive.proposal.status.none", "hive.proposal.status.reviewed", "hive.proposal.status.executed", "hive.proposal.status.paused"
-  ], "状态项名称走本地化词条（枚举封闭）");
+    "hive.proposal.status.none", "进行中", "hive.proposal.status.reviewed"
+  ], "状态项名称走名称回退链（自定义字面名 / 工厂 id i18n）");
   eq(select.props.value, "reviewed", "受控 value = 草稿 setStatus");
   ok(labelText.includes("hive.hb.promptRequired"), "提案栏提示词标注「必填」");
   const textareas = collect(propForm, (n) => n.tag === "textarea");
   eq(textareas.length, 1, "提案栏表单恰一个提示词 textarea");
   eq(textareas[0].props.placeholder, "hive.hb.proposalPromptPlaceholder", "模板占位说明文案（含 {change} 与转义语义）");
   ok(textareas[0].props.disabled !== true, "提案栏提示词恒启用（不随 summon 裁剪）");
+  /* citeName 勾选框（4.4/D6）：默认勾选（缺省 `!== false`）、文案与 hint 词条在场 */
+  const citeBox = collect(propForm, (n) => n.tag === "input" && n.props.type === "checkbox" && n.props["data-testid"] === "hb-proposal-citeName")[0];
+  ok(Boolean(citeBox), "提案栏表单含「引用提案目录」勾选框");
+  eq(citeBox.props.checked, true, "citeName 缺省 → 勾选框呈现为**勾选**（读取缺省 = 勾选）");
+  ok(textOf(collect(propForm, (n) => n.tag === "label" && n.props.title === "hive.hb.proposalCiteNameHint")[0] ?? { children: [] }).includes("hive.hb.proposalCiteName"), "勾选框携带 hint 词条（含「模板已含 {change} 时可取消勾选」说明）");
+  /* 显式 citeName:false → 勾选框不勾选（透传语义） */
+  hookCells = []; hookIndex = 0;
+  render(m.HotbarsModal(modalProps({ hotbars: { hive: [], bee: [], floor: [], proposal: [{ id: "p1", name: "继续推进", summon: false, prompt: "p", autoSend: false, citeName: false }] } })));
+  hookIndex = 0;
+  collect(render(m.HotbarsModal(modalProps({ hotbars: { hive: [], bee: [], floor: [], proposal: [{ id: "p1", name: "继续推进", summon: false, prompt: "p", autoSend: false, citeName: false }] } }))), (n) => n.props?.id === "jyv-railTab-proposal")[0].props.onClick();
+  hookIndex = 0;
+  collect(render(m.HotbarsModal(modalProps({ hotbars: { hive: [], bee: [], floor: [], proposal: [{ id: "p1", name: "继续推进", summon: false, prompt: "p", autoSend: false, citeName: false }] } }))), (n) => String(n.props.className ?? "").includes("jyv-qcRow") && typeof n.props.onClick === "function")[0].props.onClick();
+  hookIndex = 0;
+  const citeOffForm = render(m.HotbarsModal(modalProps({ hotbars: { hive: [], bee: [], floor: [], proposal: [{ id: "p1", name: "继续推进", summon: false, prompt: "p", autoSend: false, citeName: false }] } })));
+  eq(collect(citeOffForm, (n) => n.props?.["data-testid"] === "hb-proposal-citeName")[0].props.checked, false, "citeName:false → 勾选框不勾选（旧槽位缺字段才走缺省勾选）");
+}
+/* 已失效引用（4.4/D7）：setStatus 不在镜像列表 → 下拉出现「（已删除）」占位项且 value 保留原值 */
+{
+  const orphanProps = modalProps({
+    hotbars: { hive: [], bee: [], floor: [], proposal: [{ id: "p1", name: "旧卡", summon: false, prompt: "p", autoSend: false, setStatus: "gone-x" }] }
+  });
+  hookCells = []; hookIndex = 0;
+  render(m.HotbarsModal(orphanProps));
+  hookIndex = 0;
+  collect(render(m.HotbarsModal(orphanProps)), (n) => n.props?.id === "jyv-railTab-proposal")[0].props.onClick();
+  hookIndex = 0;
+  collect(render(m.HotbarsModal(orphanProps)), (n) => String(n.props.className ?? "").includes("jyv-qcRow") && typeof n.props.onClick === "function")[0].props.onClick();
+  hookIndex = 0;
+  const orphanForm = render(m.HotbarsModal(orphanProps));
+  const select = collect(collect(orphanForm, (n) => n.tag === "label" && textOf(n).includes("hive.hb.setStatus"))[0], (n) => n.tag === "select")[0];
+  const values = collect(select, (n) => n.tag === "option").map((o) => o.props.value);
+  eq(values, ["", "gone-x", "doing", "reviewed"], "已失效引用 → 首项「不设置」之后插入占位项，其后为当前列表");
+  eq(collect(select, (n) => n.tag === "option").map((o) => textOf(o))[1], "hive.proposal.status.deleted", "占位项文案 =「（已删除）」词条");
+  eq(select.props.value, "gone-x", "受控 value 保留原值（SHALL NOT 静默改写为「不设置」）");
+  /* 原样保存 → setStatus 仍为 gone-x（不做静默清空） */
+  let saved = null;
+  const saveProps = modalProps({
+    hotbars: { hive: [], bee: [], floor: [], proposal: [{ id: "p1", name: "旧卡", summon: false, prompt: "p", autoSend: false, setStatus: "gone-x" }] },
+    onSave: async (next) => { saved = next; return { ok: true }; }
+  });
+  hookCells = []; hookIndex = 0;
+  await collect(render(m.HotbarsModal(saveProps)), (n) => String(n.props.className ?? "").includes("jyv-qcSave"))[0].props.onClick();
+  eq(saved?.proposal?.[0]?.setStatus, "gone-x", "保存保留失效引用原值（宿主形状校验放行，执行点静默跳过）");
 }
 
 /* ── 5. 校验与净化：提案栏提示词空白（读取路径过滤）/ 名称重复（校验拒绝） ── */

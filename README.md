@@ -224,23 +224,36 @@ pnpm test    # 39 个冒烟测试（含 voice-grammar / voice-session / voice-ho
 
 | 端 | 内容 |
 |---|---|
-| 宿主 `lib/index.js` | cordis 插件：`/api/dsh-hive/state`（zod + 乐观锁 + 原子写）、`/events`（SSE 广播）、`/summon`（槽位召唤）、`/send`（蜂栏直发）、`/assets/{models,voice}/<file>`（白名单子目录静态资产）、`/voice/{status,asr,tts,answer,index}`（语音代理：multipart 转写 / SSE 转发 / 双 register 应答 + 落盘 / 索引）；注册模型工具 `hive_summon` / `hive_wait` |
+| 宿主 `lib/index.js` | cordis 插件：`/api/dsh-hive/state`（zod + 乐观锁 + 原子写）、`/events`（SSE 广播）、`/summon`（槽位召唤）、`/send`（蜂栏直发）、`/proposals`（提案清单：全工作区 × `openspec/changes`）与 `/proposals/status{,es}`（状态位置位 / 状态列表整单替换，均 persistDoc + SSE 广播）、`/assets/{models,voice}/<file>`（白名单子目录静态资产）、`/voice/{status,asr,tts,answer,index}`（语音代理：multipart 转写 / SSE 转发 / 双 register 应答 + 落盘 / 索引）；注册模型工具 `hive_summon` / `hive_wait` |
 | 宿主纯逻辑 `lib/hive-voice.mjs` | 语音口径常量、凭据解析、multipart 与 WAV 解析、热词表、人设模板与提示词、`spoken` 抽取、落盘文件名与排他创建、截断判定 |
+| 宿主纯逻辑 `lib/proposals.mjs` | 提案清单收集口径（`openspec/changes` 目录名过滤）、`proposalStates` 归一化/剪除/封顶、**提案状态列表**归一化与有效列表缺省合并、面板让位 reserve |
 | 客户端 `lib/client.js` | esbuild 懒 CJS 工厂；react / @deepseek-ai/* external，three 打进包内；`src/hive/voice/*`（grammar / recorder / session / speech / desk）随包 |
 | `cordis.patch.yml` | loader `- insert` 注册 |
 | `package.json` | `dsh.bundle.patch` / `dsh.client.platform:"web"` 声明；`files` 含 `assets/`（模型与语音资产） |
 
-道具栏配置持久化于布局文档的 optional `hotbars` 字段（三栏：hive / bee / floor，每栏上限 32，内置卡不落盘）：
+道具栏配置持久化于布局文档的 optional `hotbars` 字段（四栏：hive / bee / floor / proposal，每栏上限 32，内置卡不落盘）：
 
 ```jsonc
 {
   "hotbars": {
-    "hive":  [ { "id": "…", "name": "召唤设计蜂", "summon": true, "beeTypeId": "bt-design", "prompt": "…", "autoSend": false } ],
-    "bee":   [ { "id": "…", "name": "跑测试", "prompt": "…", "autoSend": true } ],
-    "floor": [ { "id": "…", "name": "新巢建蜂", "createBee": true, "autoSend": false } ]
+    "hive":     [ { "id": "…", "name": "召唤设计蜂", "summon": true, "beeTypeId": "bt-design", "prompt": "…", "autoSend": false } ],
+    "bee":      [ { "id": "…", "name": "跑测试", "prompt": "…", "autoSend": true } ],
+    "floor":    [ { "id": "…", "name": "新巢建蜂", "createBee": true, "autoSend": false } ],
+    // 提案栏：prompt 必填（模板，{change} = 选中提案名）；citeName 缺省 = 勾选
+    // （执行前把 @提案名 前置到提示词最前）；setStatus 只做形状校验，
+    // 不在当前状态列表即执行时静默跳过。
+    "proposal": [ { "id": "…", "name": "继续推进", "summon": false, "prompt": "继续推进 {change}", "autoSend": true, "setStatus": "reviewed", "citeName": false } ]
   }
 }
 ```
+
+提案工作台的可配置项（蜂巢页 ⚙ 设置 →「提案」节）：
+
+- **可视卡片行数**（3–32，默认 24）：页签设置（localStorage，即时生效），面板经 CSS 变量
+  `--jyv-proposalMaxH` 消费；画布封顶与作战报告让位恒高于该设置。
+- **状态列表**（封顶 16 条，`doc.proposalStatuses`）：出厂四值「已审阅 / 已执行 / 已暂停 / 已归档」，
+  可在设置节增删改名改色，**草稿 + 显式「保存到宿主」**整单替换写入（专用路由 + SSE 广播，
+  跨页签收敛）。删除某状态后，已打该状态的提案保留数据但不再显示标记，同名 id 重新加回即恢复。
 
 ## License
 

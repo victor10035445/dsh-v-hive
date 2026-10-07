@@ -1,12 +1,16 @@
 /**
- * 提案宿主半区冒烟测试（add-proposal-panel 2.6）：
+ * 提案宿主半区冒烟测试（add-proposal-panel 2.6；proposal-panel-config 2.5/6.1 扩展）：
  *  - `GET /proposals` 契约：全工作区一次返回、组形状、无目录工作区空组不抛错、
- *    客户端侧口径（空组不渲染）在 ui-smoke 覆盖；
- *  - `POST /proposals/status`：400/404 字面（字段级原因）、成功 → persistDoc +
- *    SSE layout-changed 广播、拒绝路径文档不变更；
- *  - 布局文档：`proposalStates` **只进 docSchema 不进 putSchema**——PUT 仅带 camera
- *    后状态位不变（重建透传）；旧档 `statusCards` 残留剥离；三键 `hotbars` PUT 仍 200
- *    （`proposal` optional）；
+ *    客户端侧口径（空组不渲染）在 ui-smoke 覆盖、**状态按当前列表过滤**；
+ *  - `POST /proposals/status`：400/404 字面（字段级原因）、**status 对当前配置列表校验**、
+ *    成功 → persistDoc + SSE layout-changed 广播、拒绝路径文档不变更；
+ *  - `POST /proposals/statuses`：整单替换（形状/颜色/名称/id 重复/超封顶 400 字段级）、
+ *    成功 → persistDoc + SSE 广播、空数组摘除整键；
+ *  - 布局文档：`proposalStates` / `proposalStatuses` **只进 docSchema 不进 putSchema**
+ *    ——PUT 仅带 camera 后两者不变（重建透传）；旧档 `statusCards` 残留剥离；
+ *    三键 `hotbars` PUT 仍 200（`proposal` optional）；
+ *  - **docSchema 载入侧放宽（数据安全级）**：孤儿/自定义状态值载入 SHALL NOT 整档重建
+ *    （positions/hotbars 无损）；
  *  - 剪除三重守卫（经 persistDoc 观测）：空工作区清单本轮跳过 / ENOENT 参与剪除 /
  *    其它错误（EACCES）该工作区本轮跳过；
  *  - fs.watch 生命周期：`persistent:false` 不阻塞进程退出 + dispose 关闭全部 watcher。
@@ -16,6 +20,7 @@ import { mkdtempSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseStoredDoc, apply, __setReadDirImpl } from "../src/index.mjs";
+import { PROPOSAL_STATUSES, PROPOSAL_STATUS_LIMIT } from "../src/proposals.mjs";
 
 const eq = (actual, expected, message) => {
   if (JSON.stringify(actual) !== JSON.stringify(expected)) {
@@ -34,10 +39,56 @@ const withStates = parseStoredDoc(
 );
 eq(withStates.proposalStates["ws-a/add-foo"], { status: "reviewed", at: 5 }, "合法 proposalStates 读取保留");
 eq(withStates.revision, 2, "proposalStates 不触发整档重建");
-/* 形状非法 → zod 强校验 → 整档重建默认（沿 summonEdges 同等严格度） */
-eq(parseStoredDoc(JSON.stringify({ ...baseDoc, proposalStates: { "ws-a/x": { status: "nope", at: 1 } } })).revision, 0, "枚举外 status → 文档重建");
-eq(parseStoredDoc(JSON.stringify({ ...baseDoc, proposalStates: { "ws-a/x": { status: "paused" } } })).revision, 0, "缺 at → 文档重建");
+/* ── 载入侧放宽（D4 数据安全级）：孤儿/自定义状态值 SHALL NOT 整档重建 ── */
+{
+  const orphan = parseStoredDoc(
+    JSON.stringify({
+      ...baseDoc,
+      positions: { "ws-a": { q: 1, r: 2 } },
+      proposalStates: { "ws-a/add-foo": { status: "custom-x", at: 5 }, "ws-a/bar": { status: "reviewed", at: 9 } }
+    })
+  );
+  eq(orphan.revision, 2, "孤儿值（custom-x）载入 SHALL NOT 整档重建（旧断言为重建，语义反转）");
+  eq(orphan.proposalStates["ws-a/add-foo"], { status: "custom-x", at: 5 }, "孤儿值条目原样保留（卡片无标记，数据不丢）");
+  eq(orphan.proposalStates["ws-a/bar"], { status: "reviewed", at: 9 }, "同档其余状态位无损");
+  eq(orphan.positions, { "ws-a": { q: 1, r: 2 } }, "其余字段（positions）无损——这正是放宽防的那次全丢");
+}
+/* 形状级仍严格（非枚举类错误照旧重建）：at 缺失 / 数组 / status 空白 */
+eq(parseStoredDoc(JSON.stringify({ ...baseDoc, proposalStates: { "ws-a/x": { status: "paused" } } })).revision, 0, "缺 at → 文档重建（形状级仍严格）");
 eq(parseStoredDoc(JSON.stringify({ ...baseDoc, proposalStates: [] })).revision, 0, "proposalStates 数组 → 文档重建");
+eq(parseStoredDoc(JSON.stringify({ ...baseDoc, proposalStates: { "ws-a/x": { status: "   ", at: 1 } } })).revision, 0, "status 全空白 → 文档重建（非空字符串形状）");
+
+/* ── 状态列表读档（proposalStatuses）：归一化宽容，SHALL NOT 整档重建 ── */
+{
+  const kept = parseStoredDoc(
+    JSON.stringify({ ...baseDoc, proposalStatuses: [{ id: "doing", color: "#4c8f5c", name: "进行中" }] })
+  );
+  eq(kept.revision, 2, "合法状态列表读取不触发重建");
+  eq(kept.proposalStatuses, [{ id: "doing", color: "#4c8f5c", name: "进行中" }], "状态列表原样读取");
+  const dirty = parseStoredDoc(
+    JSON.stringify({
+      ...baseDoc,
+      positions: { "ws-a": { q: 3, r: 4 } },
+      proposalStatuses: [{ id: "ok", color: "#123456" }, { id: "bad", color: "red" }, { id: "ok", color: "#ffffff" }]
+    })
+  );
+  eq(dirty.revision, 2, "手工改坏的状态列表 → 条目丢弃而非整档重建");
+  eq(dirty.proposalStatuses, [{ id: "ok", color: "#123456" }], "非法颜色条目丢弃 + 重复 id 丢弃后续（读侧宽容）");
+  eq(dirty.positions, { "ws-a": { q: 3, r: 4 } }, "其余字段无损");
+  eq(parseStoredDoc(JSON.stringify({ ...baseDoc, proposalStatuses: "bad" })).revision, 0, "proposalStatuses 非数组 → 形状级重建");
+  {
+    const extra = parseStoredDoc(JSON.stringify({ ...baseDoc, proposalStatuses: [{ id: "x", color: "#fff", order: 1 }] }));
+    eq(extra.revision, 2, "条目含未知键 → 不重建（载入 schema 只校数组形状）");
+    eq(extra.proposalStatuses, [{ id: "x", color: "#fff" }], "未知键经归一化重建成已知形状（残键随读档剥离）");
+  }
+  const seventeen = parseStoredDoc(
+    JSON.stringify({ ...baseDoc, proposalStatuses: Array.from({ length: PROPOSAL_STATUS_LIMIT + 1 }, (_, i) => ({ id: "s" + i, color: "#123456" })) })
+  );
+  eq(seventeen.revision, 2, "17 条状态 → 不重建（读侧截断而非拒绝）");
+  eq(seventeen.proposalStatuses.length, PROPOSAL_STATUS_LIMIT, "截断保留前 " + PROPOSAL_STATUS_LIMIT + " 条");
+  eq(seventeen.proposalStatuses.at(-1).id, "s" + (PROPOSAL_STATUS_LIMIT - 1), "保留的是前 16 条（顺序即呈现序）");
+  eq(parseStoredDoc(JSON.stringify(baseDoc)).proposalStatuses ?? null, null, "旧档无 proposalStatuses → 字段缺席（读侧回退出厂四值）");
+}
 /* 旧档 statusCards 残留：docSchema 已去键 → zod strip（不重建整档，其余字段无损） */
 const legacy = parseStoredDoc(
   JSON.stringify({ ...baseDoc, statusCards: { "bt-1": { prompt: "x", autoSend: false } } })
@@ -158,8 +209,11 @@ const bad1 = await callRoute("POST", "/api/dsh-hive/proposals/status", { workspa
 eq(bad1.status, 404, "非法工作区 → 404");
 eq(bad1.body.field, "workspaceId", "404 字段级原因（workspaceId）");
 const bad2 = await callRoute("POST", "/api/dsh-hive/proposals/status", { workspaceId: "ws-a", name: "add-foo", status: "nope" });
-eq(bad2.status, 400, "枚举外 status → 400");
+eq(bad2.status, 400, "列表外 status（含出厂枚举外）→ 400");
 eq(bad2.body.field, "status", "400 字段级原因（status）");
+const bad2b = await callRoute("POST", "/api/dsh-hive/proposals/status", { workspaceId: "ws-a", name: "add-foo", status: "" });
+eq(bad2b.status, 400, "空 status → 400");
+eq(bad2b.body.field, "status", "空 status 字段级原因");
 const bad3 = await callRoute("POST", "/api/dsh-hive/proposals/status", { workspaceId: "ws-a", name: "", status: "reviewed" });
 eq(bad3.status, 400, "空 name → 400");
 eq(bad3.body.field, "name", "400 字段级原因（name）");
@@ -193,14 +247,109 @@ await callRoute("POST", "/api/dsh-hive/proposals/status", { workspaceId: "ws-a",
 const st2 = await callRoute("GET", "/api/dsh-hive/state");
 eq(st2.body.doc.proposalStates["ws-a/add-foo"].status, "paused", "重复置位 → 覆盖（无顺序/无推导）");
 
+/* ── POST /proposals/statuses（proposal-panel-config 2.2）：整单替换 + 400 字段级 ── */
+/* 形状级 400：非数组 / 超封顶 / 颜色非法 / 名称超限 / id 重复 / 未知键 */
+{
+  const notArray = await callRoute("POST", "/api/dsh-hive/proposals/statuses", { statuses: [] });
+  eq(notArray.status, 400, "非数组载荷 → 400（整单替换的顶层形状）");
+  eq(notArray.body.field, "proposalStatuses", "非数组 → 顶层字段级原因");
+  const tooMany = Array.from({ length: PROPOSAL_STATUS_LIMIT + 1 }, (_, i) => ({ id: "s" + i, color: "#123456" }));
+  const overCap = await callRoute("POST", "/api/dsh-hive/proposals/statuses", tooMany);
+  eq(overCap.status, 400, "第 17 条状态 → 400（封顶 " + PROPOSAL_STATUS_LIMIT + "）");
+  eq(overCap.body.code, "too-many", "超封顶具名原因（too-many）");
+  const red = await callRoute("POST", "/api/dsh-hive/proposals/statuses", [{ id: "x", color: "red" }]);
+  eq(red.status, 400, "非十六进制颜色 → 400");
+  eq(red.body.field, "proposalStatuses.0.color", "颜色错误带序号路径（字段级）");
+  const longName = await callRoute("POST", "/api/dsh-hive/proposals/statuses", [{ id: "x", color: "#fff", name: "n".repeat(25) }]);
+  eq(longName.status, 400, "名称超 24 字符 → 400");
+  eq(longName.body.field, "proposalStatuses.0.name", "名称超限带序号路径");
+  const dup = await callRoute("POST", "/api/dsh-hive/proposals/statuses", [{ id: "dup", color: "#111111" }, { id: "dup", color: "#222222" }]);
+  eq(dup.status, 400, "重复 id → 400（列表内唯一）");
+  eq(dup.body.field, "proposalStatuses.1.id", "重复 id 指向后到条目（字段级）");
+  eq(dup.body.code, "duplicate-id", "重复 id 具名原因（duplicate-id）");
+  const extraKey = await callRoute("POST", "/api/dsh-hive/proposals/statuses", [{ id: "x", color: "#fff", order: 1 }]);
+  eq(extraKey.status, 400, "条目含未知键（strict）→ 400");
+  const stBad = await callRoute("GET", "/api/dsh-hive/state");
+  eq(stBad.body.doc.proposalStatuses ?? null, null, "全部拒绝路径文档不变更");
+}
+/* 成功：整单替换 → persistDoc + SSE layout-changed 广播 */
+sseWrites.length = 0;
+const customList = [{ id: "reviewed", color: "#e8a63c" }, { id: "doing", color: "#4c8f5c", name: "进行中" }];
+const putStatuses = await callRoute("POST", "/api/dsh-hive/proposals/statuses", customList);
+eq(putStatuses.status, 200, "状态列表整单替换 → 200");
+eq(putStatuses.body, { ok: true }, "响应 { ok: true }");
+const stList = await callRoute("GET", "/api/dsh-hive/state");
+eq(stList.body.doc.proposalStatuses, customList, "列表落库（归一化后与提交逐字一致）");
+const listFrames = framesOf("layout-changed");
+ok(listFrames.length >= 1, "状态列表写入 → persistDoc 广播 layout-changed（跨页签收敛）");
+eq(listFrames.at(-1).doc.proposalStatuses.length, 2, "广播帧携带最新 proposalStatuses");
+const trimmed = await callRoute("POST", "/api/dsh-hive/proposals/statuses", [{ id: " a ", color: "#ABC", name: " 甲 " }]);
+eq(trimmed.status, 200, "带空白的条目 → 200（写侧形状合法）");
+eq((await callRoute("GET", "/api/dsh-hive/state")).body.doc.proposalStatuses, [{ id: "a", color: "#ABC", name: "甲" }], "落库值经归一化 trim");
+
+/* ── 置位路径改对**当前列表**（proposal-panel-config 2.3）：列表外 → 400 ── */
+{
+  /* 当前列表 = [a]（上一步落库 trimmed）：出厂 id reviewed/paused 均不在列表 */
+  const outside = await callRoute("POST", "/api/dsh-hive/proposals/status", { workspaceId: "ws-a", name: "add-foo", status: "paused" });
+  eq(outside.status, 400, "已从列表删除的出厂状态 → 400（判定不再回落常量）");
+  eq(outside.body.field, "status", "列表外 status 字段级原因");
+  const restore = await callRoute("POST", "/api/dsh-hive/proposals/statuses", [{ id: "reviewed", color: "#e8a63c" }, { id: "doing", color: "#4c8f5c", name: "进行中" }]);
+  eq(restore.status, 200, "恢复含 doing 的列表 → 200");
+  const inside = await callRoute("POST", "/api/dsh-hive/proposals/status", { workspaceId: "ws-a", name: "add-foo", status: "doing" });
+  eq(inside.status, 200, "自定义列表内状态 → 200（可置位）");
+  const stDoing = await callRoute("GET", "/api/dsh-hive/state");
+  eq(stDoing.body.doc.proposalStates["ws-a/add-foo"].status, "doing", "自定义状态置位落库（形状校验链全链打通）");
+  const listDoing = await callRoute("GET", "/api/dsh-hive/proposals");
+  eq(listDoing.body[0].changes.find((c) => c.name === "add-foo").status, "doing", "清单并入：列表内状态并出");
+}
+/* 孤儿戳：删掉被引用的状态 → 戳保留、清单不并出；同名复活 → 回显 */
+{
+  const drop = await callRoute("POST", "/api/dsh-hive/proposals/statuses", [{ id: "reviewed", color: "#e8a63c" }]);
+  eq(drop.status, 200, "删除 doing（被 add-foo 引用中）→ 200");
+  const stOrphan = await callRoute("GET", "/api/dsh-hive/state");
+  eq(stOrphan.body.doc.proposalStates["ws-a/add-foo"].status, "doing", "孤儿戳条目保留（SHALL NOT 因状态被删而剪除）");
+  ok(Number.isFinite(stOrphan.body.doc.proposalStates["ws-a/add-foo"].at), "孤儿戳 at 原样保留");
+  const listOrphan = await callRoute("GET", "/api/dsh-hive/proposals");
+  eq(listOrphan.body[0].changes.find((c) => c.name === "add-foo").status ?? null, null, "孤儿戳无标记呈现（清单不并出）");
+  const revive = await callRoute("POST", "/api/dsh-hive/proposals/statuses", [{ id: "reviewed", color: "#e8a63c" }, { id: "doing", color: "#4c8f5c", name: "进行中" }]);
+  eq(revive.status, 200, "同名状态复活 → 200");
+  const listRevived = await callRoute("GET", "/api/dsh-hive/proposals");
+  eq(listRevived.body[0].changes.find((c) => c.name === "add-foo").status, "doing", "同名 id 复活 → 标记按原值回显（数据从未被剪）");
+}
+/* 状态列表重建透传：PUT 仅带 camera → 列表不变（漏带即「移动一次镜头丢光配置」） */
+{
+  const putCamKeep = await callRoute("PUT", "/api/dsh-hive/state", { revision: await currentRev(), camera: { theta: 2, phi: 1, dist: 30, tx: 0, tz: 0 } });
+  eq(putCamKeep.status, 200, "带列表的档 PUT camera → 200");
+  eq(putCamKeep.body.doc.proposalStatuses, [{ id: "reviewed", color: "#e8a63c" }, { id: "doing", color: "#4c8f5c", name: "进行中" }], "PUT 回写不清状态列表（putLayout 重建显式透传）");
+  const inject = await callRoute("PUT", "/api/dsh-hive/state", {
+    revision: await currentRev(),
+    proposalStatuses: [{ id: "evil", color: "#000000" }]
+  });
+  eq(inject.status, 200, "PUT 携带 proposalStatuses → 200（putSchema 无此键，zod strip）");
+  eq(inject.body.doc.proposalStatuses.find((e) => e.id === "evil") ?? null, null, "客户端提交的 proposalStatuses SHALL NOT 被接受（宿主侧独占记账）");
+  eq(inject.body.doc.proposalStatuses.length, 2, "既有列表在 strip 后仍透传保留");
+}
+/* 列表清空 = 空数组合法 → 摘除整键（读侧回退出厂四值） */
+{
+  const cleared = await callRoute("POST", "/api/dsh-hive/proposals/statuses", []);
+  eq(cleared.status, 200, "空数组（清空列表）→ 200（合法配置）");
+  const stCleared = await callRoute("GET", "/api/dsh-hive/state");
+  eq(stCleared.body.doc.proposalStatuses ?? null, null, "全空 → 摘除整键（文档无字段 = 未配置）");
+  const listFactory = await callRoute("GET", "/api/dsh-hive/proposals");
+  eq(listFactory.body[0].changes.find((c) => c.name === "add-foo").status ?? null, null, "回退出厂四值：孤儿值 doing 仍不并出");
+  eq(PROPOSAL_STATUSES.length, 4, "出厂四值常量在场（回退基准）");
+  /* 复原列表，供后续剪除/守卫段落复用（add-foo 状态值 doing 回到列表内） */
+  eq((await callRoute("POST", "/api/dsh-hive/proposals/statuses", [{ id: "reviewed", color: "#e8a63c" }, { id: "doing", color: "#4c8f5c" }])).status, 200, "复原列表（后续段落基准）");
+}
+
 /* ── 2.1 重建透传：PUT 仅带 camera → proposalStates 不变 ── */
 const putCam = await callRoute("PUT", "/api/dsh-hive/state", {
   revision: await currentRev(),
   camera: { theta: 1, phi: 1, dist: 20, tx: 0, tz: 0 }
 });
 eq(putCam.status, 200, "PUT 仅带 camera → 200");
-eq(putCam.body.doc.proposalStates["ws-a/add-foo"].status, "paused", "PUT 回写不清状态位（显式透传，镜头移动不丢贴纸）");
-eq(putCam.body.doc.revision, st2.body.doc.revision + 1, "PUT 递增 revision");
+eq(putCam.body.doc.proposalStates["ws-a/add-foo"].status, "doing", "PUT 回写不清状态位（显式透传，镜头移动不丢贴纸；当前值为列表内的 doing）");
+eq(putCam.body.doc.revision > st2.body.doc.revision, true, "PUT 递增 revision（本轮另有列表写入，故断言单调而不再钉死 +1）");
 /* 客户端携带 proposalStates 也被 zod strip（putSchema 无此键） */
 const putInject = await callRoute("PUT", "/api/dsh-hive/state", {
   revision: await currentRev(),
@@ -208,7 +357,7 @@ const putInject = await callRoute("PUT", "/api/dsh-hive/state", {
 });
 eq(putInject.status, 200, "PUT 携带 proposalStates → 200（未知键 strip）");
 eq(putInject.body.doc.proposalStates["ws-attacker/evil"] ?? null, null, "客户端提交的 proposalStates SHALL NOT 被接受（宿主侧独占记账）");
-eq(putInject.body.doc.proposalStates["ws-a/add-foo"].status, "paused", "既有状态位在 strip 后仍透传保留");
+eq(putInject.body.doc.proposalStates["ws-a/add-foo"].status, "doing", "既有状态位在 strip 后仍透传保留");
 
 /* ── 旧档 statusCards 残留剥离 + 三键 hotbars PUT 仍 200 ── */
 const putLegacy = await callRoute("PUT", "/api/dsh-hive/state", {
@@ -217,7 +366,7 @@ const putLegacy = await callRoute("PUT", "/api/dsh-hive/state", {
 });
 eq(putLegacy.status, 200, "旧 statusCards 残留 PUT → 200（zod strip，不报错）");
 eq(putLegacy.body.doc.statusCards ?? null, null, "落盘文档不再含 statusCards（残留随写入剥离）");
-eq(putLegacy.body.doc.proposalStates["ws-a/add-foo"].status, "paused", "剥离旧键不影响状态位");
+eq(putLegacy.body.doc.proposalStates["ws-a/add-foo"].status, "doing", "剥离旧键不影响状态位");
 
 const threeKeyHotbars = { hive: [], bee: [], floor: [] };
 const putThree = await callRoute("PUT", "/api/dsh-hive/state", { revision: await currentRev(), hotbars: threeKeyHotbars });
@@ -229,14 +378,37 @@ const fourKey = { hive: [], bee: [], floor: [], proposal: [proposalSlot] };
 const putFour = await callRoute("PUT", "/api/dsh-hive/state", { revision: await currentRev(), hotbars: fourKey });
 eq(putFour.status, 200, "四键 hotbars PUT → 200");
 eq(putFour.body.doc.hotbars.proposal.length, 1, "提案栏槽位落库");
-eq(putFour.body.doc.hotbars.proposal[0].setStatus, "reviewed", "提案栏 setStatus 落库（枚举值）");
-/* 提案栏：setStatus 枚举外 → 400 字段级 */
-const putBadStatus = await callRoute("PUT", "/api/dsh-hive/state", {
+eq(putFour.body.doc.hotbars.proposal[0].setStatus, "reviewed", "提案栏 setStatus 落库（出厂 id）");
+/* 提案栏：setStatus **形状校验**（proposal-panel-config 2.4 放宽）——枚举外/自定义 id 一律 200 落库 */
+const putCustomStatus = await callRoute("PUT", "/api/dsh-hive/state", {
   revision: await currentRev(),
-  hotbars: { hive: [], bee: [], floor: [], proposal: [{ ...proposalSlot, setStatus: "nope" }] }
+  hotbars: { hive: [], bee: [], floor: [], proposal: [{ ...proposalSlot, setStatus: "custom-x" }] }
 });
-eq(putBadStatus.status, 400, "提案栏 setStatus 枚举外 → 400");
-ok(putBadStatus.body.issues?.some((p) => String(p).includes("hotbars.proposal.0")), "400 返回字段级路径（hotbars.proposal.0）");
+eq(putCustomStatus.status, 200, "提案栏 setStatus 自定义 id → 200（枚举不再封闭）");
+eq(putCustomStatus.body.doc.hotbars.proposal[0].setStatus, "custom-x", "自定义 setStatus 原样落库（执行点据此静默跳过）");
+/* 提案栏：setStatus 空白 → 400（形状级拒绝：非空字符串） */
+const putBlankStatus = await callRoute("PUT", "/api/dsh-hive/state", {
+  revision: await currentRev(),
+  hotbars: { hive: [], bee: [], floor: [], proposal: [{ ...proposalSlot, setStatus: "   " }] }
+});
+eq(putBlankStatus.status, 400, "提案栏 setStatus 全空白 → 400（非空字符串形状）");
+/* 提案栏：citeName boolean optional（缺省不落键 / 显式值落库 / 非 boolean 400） */
+const putCiteOff = await callRoute("PUT", "/api/dsh-hive/state", {
+  revision: await currentRev(),
+  hotbars: { hive: [], bee: [], floor: [], proposal: [{ ...proposalSlot, citeName: false }] }
+});
+eq(putCiteOff.status, 200, "提案栏 citeName=false → 200");
+eq(putCiteOff.body.doc.hotbars.proposal[0].citeName, false, "citeName 落库（显式取消勾选）");
+const putCiteDefault = await callRoute("PUT", "/api/dsh-hive/state", {
+  revision: await currentRev(),
+  hotbars: { hive: [], bee: [], floor: [], proposal: [{ ...proposalSlot }] }
+});
+eq(putCiteDefault.body.doc.hotbars.proposal[0].citeName ?? null, null, "citeName 缺省 → 文档不含该键（读取缺省 = 勾选）");
+const putBadCite = await callRoute("PUT", "/api/dsh-hive/state", {
+  revision: await currentRev(),
+  hotbars: { hive: [], bee: [], floor: [], proposal: [{ ...proposalSlot, citeName: "yes" }] }
+});
+eq(putBadCite.status, 400, "提案栏 citeName 非 boolean → 400");
 /* 提案栏：prompt 必填（空白 → 400） */
 const putBadPrompt = await callRoute("PUT", "/api/dsh-hive/state", {
   revision: await currentRev(),
@@ -251,7 +423,19 @@ const putLinked = await callRoute("PUT", "/api/dsh-hive/state", {
 eq(putLinked.status, 200, "提案栏 summon 关 + beeTypeId 非空 → 200（R15：读取路径裁剪，非拒绝理由）");
 
 /* ── 剪除三重守卫（经 persistDoc 观测） ── */
-/* 先给 C 组置位，使剪除断言有「该留」的对照物 */
+/* 先给 C 组置位，使剪除断言有「该留」的对照物——**置位前先把 executed 放回列表**
+   （前面段落已把列表改成含 doing 的自定义列表；「置位对当前列表校验」在这里顺带
+   再验一次：列表外 → 400 且不落库）。 */
+{
+  const outsideExecuted = await callRoute("POST", "/api/dsh-hive/proposals/status", { workspaceId: "ws-c", name: "fix-baz", status: "executed" });
+  eq(outsideExecuted.status, 400, "前置：executed 不在当前列表 → 置位 400（不产生半成品）");
+  const relist = await callRoute("POST", "/api/dsh-hive/proposals/statuses", [
+    { id: "reviewed", color: "#e8a63c" },
+    { id: "executed", color: "#f2b544" },
+    { id: "doing", color: "#4c8f5c", name: "进行中" }
+  ]);
+  eq(relist.status, 200, "前置：把 executed 放回列表");
+}
 await callRoute("POST", "/api/dsh-hive/proposals/status", { workspaceId: "ws-c", name: "fix-baz", status: "executed" });
 const stC = await callRoute("GET", "/api/dsh-hive/state");
 eq(stC.body.doc.proposalStates["ws-c/fix-baz"].status, "executed", "C 组状态位置位");

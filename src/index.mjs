@@ -30,12 +30,21 @@
  *                                        ?sessionId=<活会话>（哨兵）→ sessionController.modelCatalog()。
  *  - GET  /api/dsh-hive/proposals        提案清单（add-proposal-panel 2.2）：全在册工作区
  *                                        × `openspec/changes` 目录名，并入 proposalStates
- *                                        状态位；每请求即时收集，无目录工作区空组不抛错；
+ *                                        状态位（按**当前状态列表**过滤：列表外的孤儿戳
+ *                                        不并出）；每请求即时收集，无目录工作区空组不抛错；
  *                                        同时做 fs.watch 请求期对账（懒启动/补挂/摘除）。
  *  - POST /api/dsh-hive/proposals/status 提案状态位写入（2.3）：{workspaceId,name,status}
  *                                        → 原子 mutate → 归一化/剪除 → persistDoc +
  *                                        SSE layout-changed 广播 → { ok: true }；
- *                                        校验非法 → 400/404 字段级且文档不变更。
+ *                                        `status` 按**当前列表**（doc.proposalStatuses
+ *                                        ?? 出厂四值）校验，非法 → 400/404 字段级且
+ *                                        文档不变更。
+ *  - POST /api/dsh-hive/proposals/statuses 状态列表整单替换（proposal-panel-config 2.2）：
+ *                                        `{ id, color, name? }[]`（封顶 16、id 列表内唯一）
+ *                                        → 归一化 → persistDoc + SSE 广播 → { ok: true }；
+ *                                        形状/颜色/名称/id 重复/超封顶 → 400 字段级
+ *                                        （带序号路径）且文档不变更；空数组 = 列表清空
+ *                                        （读侧回落出厂四值）。
  *  - GET  /api/dsh-hive/assets/<dir>/<file>  静态资产（`models/` + `voice/` 白名单子目录，
  *                                        add-hive-voice-desk 2.6/审阅 R3）。
  *  - 语音代理（add-hive-voice-desk 2.1–2.5，design D4/D6/D9/D10）：
@@ -98,16 +107,23 @@ import {
   truncateToCodePoints
 } from "./capabilities.mjs";
 import { createLane, laneMode } from "./lane.mjs";
-/* 提案面板纯逻辑（add-proposal-panel 1.x）：清单分组、proposalStates 归一化/剪除/
-   封顶、scope 三重守卫。`collectProposalNames` 经该模块**再出口**（单一来源，
-   SHALL NOT 在本文件另写第二份过滤实现）。 */
+/* 提案面板纯逻辑（add-proposal-panel 1.x；proposal-panel-config D1–D4）：清单分组、
+   状态列表归一化与有效列表缺省合并、proposalStates 归一化/剪除/封顶、scope 三重守卫。
+   `collectProposalNames` 经该模块**再出口**（单一来源，SHALL NOT 在本文件另写第二份
+   过滤实现）；`effectiveProposalStatuses` 是**缺省合并单点**（卡片渲染、置位校验、
+   清单并入三处共用，SHALL NOT 各自写 `?? 出厂四值`）。 */
 import {
   PROPOSAL_STATES_LIMIT,
-  PROPOSAL_STATUS_IDS,
+  PROPOSAL_STATUS_ID_MAX,
+  PROPOSAL_STATUS_LIMIT,
+  PROPOSAL_STATUS_NAME_MAX,
   buildProposalGroups,
   collectProposalNames,
   collectProposalScope,
+  effectiveProposalStatuses,
+  isKnownProposalStatus,
   normalizeProposalStates,
+  normalizeProposalStatuses,
   proposalStateKey
 } from "./proposals.mjs";
 /* 跨插件配置导入（add-hotbar-llm-model-and-import D6/R1）：白名单命名空间只读纯逻辑。
@@ -300,11 +316,17 @@ const hotbarFloorSlotSchema = z
   })
   .strict();
 
-/* 提案栏槽位（add-proposal-panel 2.1/D5）：prompt 必填（模板）、summon 新召唤开关、
-   beeTypeId 仅 summon 开启时适用、model 既有口径、setStatus 为状态枚举值（optional，
-   缺省 = 本卡不改状态）。`beeTypeId` 与 `summon` 的联动**只走读取路径裁剪**
-   （hotbars.mjs normalizeSlot），SHALL NOT 成为保存拒绝理由——与巢/地板栏同口径
-   （本文件只会对 prompt 施加 gate，两端都不新增 beeTypeId gate 规则）。 */
+/* 提案栏槽位（add-proposal-panel 2.1/D5；proposal-panel-config 2.4）：prompt 必填
+   （模板）、summon 新召唤开关、beeTypeId 仅 summon 开启时适用、model 既有口径、
+   setStatus 为状态 id（optional；**形状校验为非空字符串，SHALL NOT 对代码常量枚举
+   封闭**——状态列表已是用户可配置数据，「是否在当前列表」由 /proposals/status 的
+   400 与执行点的静默跳过判定，不在此处拒绝）、citeName 为「执行前引用提案目录」开关
+   （boolean optional，**读取缺省 = 勾选**，消费点以 `!== false` 判定）。
+   `beeTypeId` 与 `summon` 的联动**只走读取路径裁剪**（hotbars.mjs normalizeSlot），
+   SHALL NOT 成为保存拒绝理由——与巢/地板栏同口径（本文件只会对 prompt 施加 gate，
+   两端都不新增 beeTypeId gate 规则）。
+   本 schema 是 docSchema 与 putSchema **共用对象**：一处放宽载入与 PUT 两处同时生效
+   （D4 「载入 schema 不放宽 → 孤儿状态值整档重建」的防线在同一处落地）。 */
 const hotbarProposalSlotSchema = z
   .object({
     id: z.string().min(1),
@@ -314,7 +336,8 @@ const hotbarProposalSlotSchema = z
     model: llmModelSchema.optional(),
     prompt: z.string().trim().min(1),
     autoSend: z.boolean(),
-    setStatus: z.enum(PROPOSAL_STATUS_IDS).optional()
+    setStatus: z.string().trim().min(1).optional(),
+    citeName: z.boolean().optional()
   })
   .strict();
 
@@ -358,20 +381,80 @@ const hotbarsSchema = z
   })
   .strict();
 
-/* ── 提案状态位 proposalStates（add-proposal-panel 2.1/D3）：optional、version 1
-      不变。形状 = Record<"<workspaceId>/<changeName>", { status, at }>——**引擎自有
-      记账**（浏览器 PUT 不携带此字段，putSchema 无此键，zod strip 未知键），
+/* ── 提案状态位 proposalStates（add-proposal-panel 2.1/D3；proposal-panel-config 2.5）：
+      optional、version 1 不变。形状 = Record<"<workspaceId>/<changeName>", { status, at }>
+      ——**引擎自有记账**（浏览器 PUT 不携带此字段，putSchema 无此键，zod strip），
       状态只有专用路由一条写入路径。键只构造不反解（proposals.mjs proposalStateKey）。
-      zod 强校验形状（status 枚举封闭 + at 数值）；数量封顶与剪除走
+      zod 校验形状（**status 非空字符串** + at 数值）；数量封顶与剪除走
       normalizeProposalStates（超出按 at 淘汰最旧，SHALL NOT 拒绝置位——存档超限若走
-      schema 拒绝会整档重建默认、positions 全丢，代价不成比例，沿 summonEdges 先例）。 ── */
+      schema 拒绝会整档重建默认、positions 全丢，代价不成比例，沿 summonEdges 先例）。
+
+      **载入侧放宽为形状校验（D4 数据安全级必做项）**：status 原为
+      `z.enum(PROPOSAL_STATUS_IDS)`——列表可配置后，自定义/孤儿状态值一旦落进
+      proposalStates，旧 schema 的 safeParse 失败即**整档重建默认**（positions/hotbars/
+      proposalStates 全丢）。此处与非宿主侧 normalizeProposalStates **同口径**放宽；
+      「是否在当前列表」的语义判断只在置位路由（400）与卡片呈现（无标记）做。 ── */
 
 const proposalStateSchema = z.object({
-  status: z.enum(PROPOSAL_STATUS_IDS),
+  status: z.string().trim().min(1),
   at: z.number()
 });
 
 const proposalStatesSchema = z.record(z.string().min(1), proposalStateSchema);
+
+/* ── 状态列表 proposalStatuses（proposal-panel-config 2.1/D1）：optional、version 1
+      不变。形状 = Array<{ id, color, name? }>（封顶 16 条）——同属**引擎自有记账**
+      （浏览器 PUT 不携带此字段，putSchema 无此键，zod strip），写入只有专用路由
+      `/proposals/statuses` 一条路径；读取经 layout-changed 文档镜像。
+      **载入 schema 刻意只做「数组形状」这一层**（max 也不设）：spec「手改档读侧宽容」
+      要求非法颜色 / 重复 id / 17 条状态的档**丢弃与截断**而非整档重建——把颜色正则、
+      名称长度、id 唯一与封顶写进 zod，safeParse 失败就会重建默认文档（positions/
+      hotbars 全丢），与 proposalStates「载入侧放宽」同一课。逐条判定全部落在
+      `normalizeProposalStatuses`（读档宽容丢弃/截断）；**写侧**则由
+      `validateProposalStatusesPayload` 以同一套规则整单 400 报字段级原因。 ── */
+
+/** 十六进制色串（`#rgb` / `#rrggbb`，大小写不敏感）——写侧载荷校验与读档同一正则。 */
+const STATUS_COLOR_RE = /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i;
+
+/** 写侧单条形状（strict：未知键拒绝；读档侧不设限——见上方注释）。 */
+const proposalStatusEntrySchema = z
+  .object({
+    id: z.string().trim().min(1).max(PROPOSAL_STATUS_ID_MAX),
+    color: z.string().regex(STATUS_COLOR_RE),
+    name: z.string().trim().max(PROPOSAL_STATUS_NAME_MAX).optional()
+  })
+  .strict();
+
+const proposalStatusesSchema = z.array(z.unknown());
+
+/**
+ * `/proposals/statuses` 载荷校验（proposal-panel-config 2.2/D1，**字段级原因**）：
+ * zod 校单条形状（id 非空且 ≤32 / color 十六进制 / name ≤24 / 未知键 strict 拒绝），
+ * 「封顶 16」与「**id 列表内唯一**」两条 zod 表达不了（重复与超限在 zod 里都只是
+ * 数组下标，说不清是哪一种），故在 zod 之上补两条具名判定——写侧 400 的唯一实现。
+ *
+ * 与读档归一化（`normalizeProposalStatuses`）**同规则、不同后果**：读侧丢弃/截断
+ * （手工改坏的档 SHALL NOT 整档重建），写侧整单 400（用户显式保存必须知道哪里不对）。
+ *
+ * @param {unknown} body 请求体
+ * @returns {{list: Array<object>}|{error: {field: string, code: string}}}
+ */
+function validateProposalStatusesPayload(body) {
+  if (!Array.isArray(body)) return { error: { field: "proposalStatuses", code: "not-array" } };
+  if (body.length > PROPOSAL_STATUS_LIMIT) return { error: { field: "proposalStatuses", code: "too-many" } };
+  const seen = new Set();
+  for (let index = 0; index < body.length; index++) {
+    const parsed = proposalStatusEntrySchema.safeParse(body[index]);
+    if (!parsed.success) {
+      const path = parsed.error?.issues?.[0]?.path?.join(".") ?? "";
+      return { error: { field: `proposalStatuses.${index}${path ? "." + path : ""}`, code: "invalid-entry" } };
+    }
+    const id = parsed.data.id;
+    if (seen.has(id)) return { error: { field: `proposalStatuses.${index}.id`, code: "duplicate-id" } };
+    seen.add(id);
+  }
+  return { list: body };
+}
 
 /* ── 召唤边 summonEdges（hive-interaction-polish 2.1/D7）：optional 字段、version 1
       不变（optional 字段先例：hotbars / proposalStates / 本 change 的槽位 `model`）。
@@ -415,6 +498,7 @@ const docSchema = z.object({
   beeAssignments: beeAssignmentsSchema.optional(),
   beeEngineState: beeEngineStateSchema.optional(),
   proposalStates: proposalStatesSchema.optional(),
+  proposalStatuses: proposalStatusesSchema.optional(),
   summonEdges: summonEdgesSchema.optional()
 });
 
@@ -663,8 +747,9 @@ async function readBinaryBody(req, limit = VOICE_LIMITS.ASR_MAX_BYTES) {
 
 /** 读当前文档；无文件/损坏/超版本 → 默认文档（重建，不落盘——首次写入时再落）。
  *  蜂种三字段额外过归一化（手工改坏的条目丢弃而非整档重建）；
- *  召唤边与提案状态位同口径（2.1）：非法条目丢弃 + 封顶淘汰，旧文档无此字段按缺省
- *  处理（version 保持 1，SHALL NOT 触发迁移或整档重建）。 */
+ *  召唤边、提案状态位与状态列表同口径（2.1）：非法条目丢弃 + 封顶截断，旧文档无
+ *  这些字段按缺省处理（version 保持 1，SHALL NOT 触发迁移或整档重建）。
+ *  **放宽后的载入 schema + 归一化 = 存量孤儿值档载入 SHALL NOT 重建**（D4）。 */
 export function parseStoredDoc(text) {
   if (!text) return defaultDoc();
   try {
@@ -675,12 +760,14 @@ export function parseStoredDoc(text) {
       const beeTypes = data.beeTypes !== undefined ? normalizeBeeTypes(data.beeTypes) : undefined;
       const summonEdges = data.summonEdges !== undefined ? normalizeSummonEdges(data.summonEdges) : undefined;
       const proposalStates = normalizeProposalStates(data.proposalStates);
+      const proposalStatuses = normalizeProposalStatuses(data.proposalStatuses);
       return {
         ...data,
         ...(data.beeTypes !== undefined ? { beeTypes } : {}),
         ...(data.beeAssignments !== undefined ? { beeAssignments: normalizeAssignments(data.beeAssignments, beeTypes ?? []) } : {}),
         ...(data.beeEngineState !== undefined ? { beeEngineState: normalizeEngineState(data.beeEngineState) } : {}),
         ...(proposalStates !== undefined ? { proposalStates } : {}),
+        ...(proposalStatuses !== undefined ? { proposalStatuses } : {}),
         ...(summonEdges !== undefined ? { summonEdges } : {})
       };
     }
@@ -2635,6 +2722,11 @@ export function apply(ctx) {
               proposalStateScope && proposalStateScope.decidable
                 ? normalizeProposalStates(doc.proposalStates, proposalStateScope)
                 : normalizeProposalStates(doc.proposalStates);
+            /* 状态列表（proposal-panel-config 2.1/D2）：**同款「不进 putSchema + 重建时
+               显式透传」**——上面 proposalStates 的注释就是这里的教训原话：漏带一个键
+               就是「用户移动一次镜头丢光配置」。读档归一化后的值原样透传（不再二次
+               归一化，避免与读档口径漂移）。 */
+            const nextProposalStatuses = normalizeProposalStatuses(doc.proposalStatuses);
             doc = {
               version: DOC_VERSION,
               revision: doc.revision + 1,
@@ -2648,6 +2740,7 @@ export function apply(ctx) {
               beeAssignments: nextAssignments ?? {},
               beeEngineState: normalizeEngineState(parsed.data.beeEngineState === undefined ? (doc.beeEngineState ?? {}) : parsed.data.beeEngineState),
               ...(nextProposalStates && Object.keys(nextProposalStates).length > 0 ? { proposalStates: nextProposalStates } : {}),
+              ...(nextProposalStatuses !== undefined ? { proposalStatuses: nextProposalStatuses } : {}),
               ...(nextSummonEdges && Object.keys(nextSummonEdges).length > 0 ? { summonEdges: nextSummonEdges } : {})
             };
             try {
@@ -2823,22 +2916,57 @@ export function apply(ctx) {
                  见 reconcileProposalWatchers。 ── */
           if (route === "/proposals" && req.method === "GET") {
             reconcileProposalWatchers();
-            const groups = buildProposalGroups(listWorkspaces(), (path) => readProposalNames(path).names ?? [], doc.proposalStates);
+            /* 有效列表（proposal-panel-config 2.5/D4）：`doc.proposalStatuses ?? 出厂四值`
+                经缺省合并单点取得，列表外的孤儿戳不并出（卡片无标记，数据保留）。 */
+            const groups = buildProposalGroups(
+              listWorkspaces(),
+              (path) => readProposalNames(path).names ?? [],
+              doc.proposalStates,
+              effectiveProposalStatuses(doc.proposalStatuses)
+            );
             json(res, 200, groups);
             return;
           }
 
-          /* ── 提案状态位写入（add-proposal-panel 2.3/D3）：专用路由（不走 PUT /state 的
-                 revision 通道）——校验 → 原子 mutate → 归一化/剪除 → persistDoc()
-                 （内含 SSE layout-changed 广播，跨页签自然收敛）→ { ok: true }。
-                 非法工作区 / 枚举外状态 / 空 name / 该工作区当前不含此 change →
-                 400/404 字段级原因且文档不变更。 ── */
+          /* ── 状态列表写入（proposal-panel-config 2.2/D2）：专用路由**整单替换**
+                 （不走 PUT /state 的 revision 通道）——字段级校验 → 原子 mutate →
+                 归一化 → persistDoc()（内含 SSE layout-changed 广播，跨页签自然收敛）
+                 → { ok: true }。
+                 非法输入（形状/颜色/名称超限/id 重复/超封顶 16）→ 400 字段级原因且
+                 文档不变更（含序号路径，如 `proposalStatuses.2.id`）。
+                 空数组合法（= 列表清空，读侧回落出厂四值）；全空列表摘除整键
+                 （与 proposalStates 同纪律：文档无字段 = 未配置）。 ── */
+          if (route === "/proposals/statuses" && req.method === "POST") {
+            const body = await readJsonBody(req);
+            const verdict = validateProposalStatusesPayload(body);
+            if (verdict.error) {
+              json(res, 400, { error: "invalid proposal statuses payload", field: verdict.error.field, code: verdict.error.code });
+              return;
+            }
+            const nextStatuses = normalizeProposalStatuses(verdict.list);
+            doc = { ...doc };
+            if (nextStatuses === undefined) delete doc.proposalStatuses;
+            else doc.proposalStatuses = nextStatuses;
+            persistDoc();
+            json(res, 200, { ok: true });
+            return;
+          }
+
+          /* ── 提案状态位写入（add-proposal-panel 2.3/D3；proposal-panel-config 2.3）：
+                专用路由（不走 PUT /state 的 revision 通道）——校验 → 原子 mutate →
+                归一化/剪除 → persistDoc()（内含 SSE layout-changed 广播，跨页签自然
+                收敛）→ { ok: true }。
+                 非法工作区 / **当前状态列表之外**的状态 / 空 name / 该工作区当前不含
+                此 change → 400/404 字段级原因且文档不变更。
+                「在当前列表中」= `doc.proposalStatuses ?? 出厂四值`（缺省合并单点
+                effectiveProposalStatuses）——列表可配置后，工厂 id 也可能已不在列表中
+                （用户删掉「已审阅」），故判定不能回落到常量。 ── */
           if (route === "/proposals/status" && req.method === "POST") {
             const body = await readJsonBody(req);
             const proposalStatusSchema = z.object({
               workspaceId: z.string().min(1),
               name: z.string().min(1),
-              status: z.enum(PROPOSAL_STATUS_IDS)
+              status: z.string().min(1)
             });
             const parsed = proposalStatusSchema.safeParse(body);
             if (!parsed.success) {
@@ -2847,6 +2975,12 @@ export function apply(ctx) {
               return;
             }
             const { workspaceId, name, status } = parsed.data;
+            if (!isKnownProposalStatus(effectiveProposalStatuses(doc.proposalStatuses), status)) {
+              /* 列表外的 status（含已删的自定义状态与已删的出厂状态）→ 400（客户端
+                 执行点另有「不在当前列表即静默跳过」守卫，此处是宿主侧权威判定）。 */
+              json(res, 400, { error: "status not in current list", field: "status" });
+              return;
+            }
             const workspace = listWorkspaces().find((entry) => workspaceEntityId(entry) === workspaceId);
             if (!workspace) {
               json(res, 404, { error: "workspace not found", field: "workspaceId" });

@@ -13,6 +13,11 @@ export const PANEL_LIMITS = Object.freeze({ m: [1, 3], n: [1, 8] });
 export const BAR_LIMITS = Object.freeze({ m: [1, 8], n: [1, 2] });
 /** 作战报告面板可视行数界（左下角锚定，默认 8、上限 20；hive-combat-log）。 */
 export const REPORT_ROWS_LIMIT = Object.freeze([1, 20]);
+/** 提案面板可视卡片行数界（左缘居中锚定，默认 24；proposal-panel-config D5）。
+ *  口径 = 卡片行数（28px + gap 6 ≈ 34px/行），与「报告行数」同语言、换显示器不失真。
+ *  上限 32 给超高分屏留余量；默认 24（≈816px）是**零回归**取值——现状
+ *  `calc(100% - 100px)` 在 1080p 下 ≈810px（≈24 行）。 */
+export const PROPOSAL_ROWS_LIMIT = Object.freeze([3, 32]);
 
 export const LAYOUT_DEFAULTS = Object.freeze({
   panelM: 2, // 右侧工蜂阵列列数
@@ -30,6 +35,11 @@ function clampInt(value, [min, max], fallback) {
 /** 作战报告行数净房（store 写侧与 client 读侧共用口径；原 client 局部实现上移）。 */
 export function sanitizeReportRows(value) {
   return clampInt(value, REPORT_ROWS_LIMIT, DEFAULT_SETTINGS.reportRows);
+}
+
+/** 提案面板行数净房（写读两侧共用；越界值落回界内）。 */
+export function sanitizeProposalRows(value) {
+  return clampInt(value, PROPOSAL_ROWS_LIMIT, DEFAULT_SETTINGS.proposalRows);
 }
 
 /** 布局参数读侧净房（localStorage 手改/旧档越界 → 落回界内）。 */
@@ -111,6 +121,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   showFps: true, // FPS 计数浮标（画布左上角，调试用）
   reportCollapsed: false, // 作战报告面板折叠态（左下角，展开默认；hive-combat-log）
   reportRows: 8, // 作战报告面板可视行数（左下角锚定，1–20 行，默认 8；hive-combat-log）
+  proposalRows: 24, // 提案面板可视卡片行数（左缘居中锚定，3–32 行，默认 24；proposal-panel-config D5）
   cameraPitchDeg: 45, // 相机俯角锁定值（15–70，相机手势重排 D3；二轮定稿 45，旧默认 38 见 init 迁移）
   rightDragSpin: false, // 右键旋转开关（D4：开 = 右键拖拽方位旋转；关 = 全向平移，默认关）
   /* batchSendConfirm 已随 bee-status-cards 全拆移除（add-proposal-panel 4.3）：
@@ -153,6 +164,7 @@ export function normalizeSettings(raw) {
   }
   merged.layout = sanitizeLayout(merged.layout); // 阵列参数越界净房
   merged.reportRows = clampInt(merged.reportRows, REPORT_ROWS_LIMIT, DEFAULT_SETTINGS.reportRows); // 报告行数越界净房
+  merged.proposalRows = sanitizeProposalRows(merged.proposalRows); // 提案面板行数越界净房（proposal-panel-config 1.2）
   merged.voice = sanitizeVoiceSettings(merged.voice); // 语音会话类设置越界净房（5.1/R14）
   return merged;
 }

@@ -390,7 +390,21 @@ div:has(> [data-slot="sidebar.footer.action"]):has(.jyv-seat){flex-wrap:wrap}
       锚点），max-height 滚动；下缘按 --jyv-panelBottom（76px 道具栏 + 作战报告让位
       reserve）动态让位。组头 + 卡片列表；状态 = 色点 + 本地化名称；头部刷新按钮与
       空态占位共用同一入口（watcher 降级路径的一等公民）。 ── */
-.jyv-proposalPanel{position:absolute;left:10px;top:50%;transform:translateY(-50%);z-index:30;display:flex;flex-direction:column;gap:6px;width:186px;max-height:calc(100% - 100px);box-sizing:border-box;padding:6px;pointer-events:auto;bottom:var(--jyv-panelBottom,76px);overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:var(--dsw-alias-scrollbar-bg-l2) transparent}
+/* 面板高度与锚定（proposal-panel-config 修正，用户反馈「2 个提案就要滚动」）：
+   锚点仍是「画布左缘垂直居中」，但**换了实现方式**——原先是
+   top:50% + translateY(-50%) + bottom:var(--jyv-panelBottom)：
+     (a) 那条 bottom 在「高度 auto + max-height」的盒子里是**物理内缩**而非让位，把
+         可用高度压成 100% − 100px − reserve（报告展开 8 行时实测只剩约 235px）；
+     (b) translateY(-50%) 把可用空间对半分，而让位线远在画布中线之下——下半截的
+         富余全被浪费，实测 2 个提案就开始滚动。
+   现在：top:0 / bottom:var(--jyv-panelBottom) / margin-block:auto（绝对定位盒居中
+   惯用法，零百分比、零 transform），高度只由 max-height 约束：
+     min(--jyv-proposalMaxH（行数上限）, --jyv-proposalBandH（实测可用带）)
+   ——可用带 = 画布高度 − 让位量，由 client 用 ResizeObserver 实测下发（CSS 里
+   calc(100% - reserve) 在 max-height 上解析不可靠：实测浏览器算出 540px 却按
+   743px 排版，面板直接压到报告上）。面板据此在让位线以上均分空白、自由生长，
+   下缘永在让位线之上，行数上限封顶后才内部滚动。 */
+.jyv-proposalPanel{position:absolute;left:10px;top:0;bottom:var(--jyv-panelBottom, 76px);margin-block:auto;z-index:30;display:flex;flex-direction:column;gap:6px;width:186px;height:fit-content;max-height:min(var(--jyv-proposalMaxH, 9999px),var(--jyv-proposalBandH, 9999px));box-sizing:border-box;padding:6px;pointer-events:auto;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:var(--dsw-alias-scrollbar-bg-l2) transparent}
 .jyv-proposalHead{display:flex;align-items:center;gap:6px;flex:none;padding:0 2px 2px}
 .jyv-proposalTitle{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;font-weight:700;letter-spacing:.06em;color:var(--jyv-text-dim)}
 .jyv-proposalRefresh{flex:none;border:none;background:transparent;color:var(--jyv-accent);font-size:13px;line-height:1;cursor:pointer;padding:3px 5px;border-radius:6px}
@@ -409,6 +423,20 @@ div:has(> [data-slot="sidebar.footer.action"]):has(.jyv-seat){flex-wrap:wrap}
 .jyv-proposalEmptyBtn:hover:not(:disabled){background:color-mix(in srgb,var(--jyv-text) 9%,transparent)}
 /* 编辑器状态置位下拉行（提案栏节） */
 .jyv-hbStatusRow{display:flex;align-items:center;gap:6px}
+/* 提案状态列表编辑器（proposal-panel-config 5.1）：行式条目 = 色块 + 名称输入 + id + 删除；
+   全部走 --dsw-alias-* token 体系（与设置模态其余控件同族）。 */
+.jyv-proposalStatusList{display:flex;flex-direction:column;gap:6px;padding:2px 0}
+.jyv-proposalStatusRow{display:flex;align-items:center;gap:8px}
+.jyv-proposalStatusColor{flex:none;width:36px;height:26px;padding:0;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:var(--dsw-alias-bg-layer-3);cursor:pointer}
+.jyv-proposalStatusColor::-webkit-color-swatch-wrapper{padding:2px}
+.jyv-proposalStatusColor::-webkit-color-swatch{border:none;border-radius:4px}
+.jyv-proposalStatusNameInput{flex:1;min-width:0;box-sizing:border-box;height:26px;padding:0 8px;border-radius:8px;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary);font-size:12px}
+.jyv-proposalStatusNameInput::placeholder{color:var(--dsw-alias-label-tertiary)}
+.jyv-proposalStatusId{flex:none;max-width:96px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:var(--dsw-alias-label-secondary);font-family:ui-monospace,monospace}
+.jyv-proposalStatusRemove{flex:none;width:26px;height:26px;padding:0;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:transparent;color:var(--dsw-alias-label-secondary);font-size:14px;line-height:1;cursor:pointer}
+.jyv-proposalStatusRemove:hover{background:color-mix(in srgb,var(--dsw-alias-state-error-primary) 14%,transparent);border-color:var(--dsw-alias-state-error-primary);color:var(--dsw-alias-state-error-primary)}
+/* 已失效状态引用占位项（槽位编辑器的状态下拉）：中性灰 + 不可选样式语义（样式层只做弱化） */
+.jyv-proposalStatusGone{color:var(--dsw-alias-label-tertiary)}
 /* ── 顶部会话概要条（session-brief-bar 5.2/D4 重设计）：canvasWrap 顶部居中半透明
       只读卡片；pointer-events 限定条体（不遮挡画布手势，条外事件穿透）；栈式布局：
       标题行（accent 圆点 + 加粗，单行省略）→「任务」徽标行（末回合 prompt）→

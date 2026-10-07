@@ -3,7 +3,9 @@
  * quick-commands-client-smoke 的 appendPrompt/workerBeeIdOf 断言）：
  *  - normalizeHotbars：四栏形状 / 按栏字段矩阵裁剪 / 联动裁剪 / 容量裁剪 /
  *    重名去重 / 旧坏数据按空处理 / 槽位 `model` 透传（四栏全开、与
- *    prompt/beeTypeId 同门控、形状非法仅剥离字段不丢槽位）；
+ *    prompt/beeTypeId 同门控、形状非法仅剥离字段不丢槽位）/
+ *    **`setStatus` 形状放宽（非空字符串，不再枚举封闭）与 `citeName` 透传不物化**
+ *    （proposal-panel-config 1.3）；
  *  - validateSlotDraft：名称非空唯一 / 蜂栏与提案栏提示词必填 / 召唤·建蜂关闭提示词
  *    不接受 / `model` 形状字段级拒绝（hive.hb.err.invalidModel，R6）/
  *    上限 32 / 容量超出提示键（保存允许）/ 提案栏 `beeTypeId` 无拒绝规则（R15）；
@@ -27,6 +29,7 @@ import {
   appendPrompt,
   effectiveHotbarSlots,
   emptyHotbars,
+  isValidSlotStatus,
   normalizeHotbars,
   normalizeSlot,
   resolveHotbarKind,
@@ -73,15 +76,20 @@ const norm = normalizeHotbars({
     { id: "f2", name: "纯建巢", createBee: false, prompt: "应被联动裁剪", model: { provider: "p", model: "m" } }, // 建蜂关闭 → prompt 与模型同门控裁剪
     { id: "f3", name: "缺 createBee", prompt: "可选可留" } // createBee 缺省 false → prompt 联动裁剪
   ],
-  /* 提案栏（add-proposal-panel 3.1）：提示词必填、字段按 summon 门控、setStatus 受限枚举 */
+  /* 提案栏（add-proposal-panel 3.1；proposal-panel-config 1.3/1.4）：提示词必填、
+     字段按 summon 门控、setStatus **形状校验**（非空字符串，枚举不封闭）、citeName 透传 */
   proposal: [
     { id: "p1", name: " 继续推进 ", summon: true, beeTypeId: "bt-review", model: { provider: " p ", model: " m " }, prompt: "推进 {change}", autoSend: true, setStatus: "reviewed" },
-    { id: "p2", name: "只直发", summon: false, beeTypeId: "bt-review", model: { provider: "p", model: "m" }, prompt: "看 {change}", autoSend: false, setStatus: "nope" }, // 召唤关闭 → 蜂种/模型裁剪；枚举外 setStatus 剥离
+    { id: "p2", name: "只直发", summon: false, beeTypeId: "bt-review", model: { provider: "p", model: "m" }, prompt: "看 {change}", autoSend: false, setStatus: "custom-x" }, // 召唤关闭 → 蜂种/模型裁剪；自定义 setStatus 原样保留
     { id: "p3", name: "缺提示词", summon: true }, // 提案栏提示词必填 → 滤
     { id: "p4", name: "空白提示词", summon: false, prompt: "   " }, // 空白 → 滤
     { id: "p5", name: "无 setStatus", summon: false, prompt: "p" }, // setStatus 缺省 → 无该字段
     { id: "p6", name: "setStatus 非字符串", summon: false, prompt: "p", setStatus: 7 }, // 形状非法 → 剥离
-    { id: "p7", name: "带建蜂字段", summon: false, prompt: "p", createBee: true } // 提案栏无 createBee → 裁剪
+    { id: "p7", name: "带建蜂字段", summon: false, prompt: "p", createBee: true }, // 提案栏无 createBee → 裁剪
+    { id: "p8", name: "不引用", summon: false, prompt: "p", citeName: false }, // citeName 显式关 → 透传落字段
+    { id: "p9", name: "引用缺省", summon: false, prompt: "p", citeName: true }, // citeName 显式开 → 透传落字段
+    { id: "p10", name: "坏 citeName", summon: false, prompt: "p", citeName: "yes" }, // 非 boolean → 剥离字段（缺省 = 勾选）
+    { id: "p11", name: "空白 setStatus", summon: false, prompt: "p", setStatus: "   " } // 全空白 → 形状非法，剥离
   ]
 });
 eq(norm.hive.length, 5, "巢栏：结构非法/重名条目全部滤除；模型形状非法仅剥离字段不丢槽位");
@@ -99,13 +107,24 @@ eq(norm.floor[0], { id: "f1", name: "建巢建蜂", autoSend: true, createBee: t
 eq(norm.floor[1], { id: "f2", name: "纯建巢", autoSend: false, createBee: false }, "地板栏建蜂关闭 → prompt/model 同门控裁剪");
 eq(norm.floor[2], { id: "f3", name: "缺 createBee", autoSend: false, createBee: false }, "createBee 缺省 false");
 
-/* 提案栏（3.1）：提示词必填 + 字段矩阵 + setStatus 受限枚举 */
-eq(norm.proposal.length, 5, "提案栏：缺/空白提示词滤除，其余保留（坏 setStatus 仅剥离字段）");
+/* 提案栏（3.1 + proposal-panel-config 1.3）：提示词必填 + 字段矩阵 + setStatus 形状校验 + citeName */
+eq(norm.proposal.length, 9, "提案栏：缺/空白提示词滤除，其余保留（坏 setStatus/citeName 仅剥离字段）");
 eq(norm.proposal[0], { id: "p1", name: "继续推进", autoSend: true, summon: true, prompt: "推进 {change}", beeTypeId: "bt-review", model: { provider: "p", model: "m" }, setStatus: "reviewed" }, "提案栏召唤条目归一化（name trim / 提示词原文保留 / 模型 trim）");
-eq(norm.proposal[1], { id: "p2", name: "只直发", autoSend: false, summon: false, prompt: "看 {change}" }, "提案栏召唤关闭 → beeTypeId/model 读取路径裁剪（提示词保留）；枚举外 setStatus 剥离（不丢槽位）");
+eq(norm.proposal[1], { id: "p2", name: "只直发", autoSend: false, summon: false, prompt: "看 {change}", setStatus: "custom-x" }, "提案栏召唤关闭 → beeTypeId/model 读取路径裁剪；**列表外/自定义 setStatus 原样保留**（D4 形状校验，删状态不静默清空）");
 eq(norm.proposal[2], { id: "p5", name: "无 setStatus", autoSend: false, summon: false, prompt: "p" }, "setStatus 缺省 → 字段缺席（本卡不改状态）");
-eq(norm.proposal[3], { id: "p6", name: "setStatus 非字符串", autoSend: false, summon: false, prompt: "p" }, "setStatus 形状非法 → 独立剥离字段（槽位保留）");
+eq(norm.proposal[3], { id: "p6", name: "setStatus 非字符串", autoSend: false, summon: false, prompt: "p" }, "setStatus 非字符串 → 独立剥离字段（槽位保留）");
 eq(norm.proposal[4], { id: "p7", name: "带建蜂字段", autoSend: false, summon: false, prompt: "p" }, "提案栏无 createBee → 按栏裁剪丢弃");
+eq(norm.proposal[5], { id: "p8", name: "不引用", autoSend: false, summon: false, prompt: "p", citeName: false }, "citeName 显式 false → 透传落字段（消费点据此不前置引用）");
+eq(norm.proposal[6], { id: "p9", name: "引用缺省", autoSend: false, summon: false, prompt: "p", citeName: true }, "citeName 显式 true → 透传落字段");
+eq(norm.proposal[7], { id: "p10", name: "坏 citeName", autoSend: false, summon: false, prompt: "p" }, "citeName 非 boolean → 剥离字段（缺字段 = 缺省勾选，消费点 `!== false` 判定）");
+eq(norm.proposal[8], { id: "p11", name: "空白 setStatus", autoSend: false, summon: false, prompt: "p" }, "setStatus 全空白 → 形状非法，剥离字段");
+/* citeName 缺省不物化：透传落盘的槽位**不含**该键（缺字段不写盘，归一化幂等） */
+ok(!("citeName" in norm.proposal[0]) && !("citeName" in norm.proposal[2]), "citeName 缺省不物化（透传不落盘，归一化幂等）");
+eq(normalizeSlot("proposal", { id: "x", name: "n", prompt: "p", citeName: false }).citeName, false, "normalizeSlot 直测：citeName=false 透传");
+ok(!("citeName" in normalizeSlot("proposal", { id: "x", name: "n", prompt: "p" })), "normalizeSlot 直测：citeName 缺省不产键");
+/* isValidSlotStatus：形状判定（非空字符串），不再对常量枚举封闭 */
+ok(isValidSlotStatus("reviewed") && isValidSlotStatus("custom-x"), "isValidSlotStatus：形状校验（出厂 id 与自定义 id 同等放行）");
+ok(!isValidSlotStatus("") && !isValidSlotStatus("   ") && !isValidSlotStatus(7) && !isValidSlotStatus(undefined), "isValidSlotStatus：空/空白/非字符串 → false");
 ok(Object.keys(emptyHotbars()).sort().join(",") === "bee,floor,hive,proposal", "emptyHotbars 四键（patchSlot 直接索引 prev[section] 的前提）");
 eq(HOTBAR_KINDS, ["hive", "bee", "floor", "proposal"], "HOTBAR_KINDS 四栏（数组序即模态 nav 序）");
 

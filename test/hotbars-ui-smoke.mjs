@@ -558,8 +558,8 @@ eq(collect(panelPreviewMissing, (n) => n.tag === "img").length, 0, "组合键未
 const guardRef = { current: null };
 const settingsModal = render(HiveSettingsModal({ t, settings: { layout: layout0 }, setSettings: () => {}, guardRef, onClose: () => {} }));
 const railTabs = collect(settingsModal, (n) => n.props?.id && String(n.props.id).startsWith("jyv-railTab-"));
-/* 左纵排四节（add-hive-voice-desk 起追加「语音」节：spec dsh-hive「设置面板框架」修订） */
-eq(railTabs.map((n) => n.props.id), ["jyv-railTab-scene", "jyv-railTab-appearance", "jyv-railTab-layout", "jyv-railTab-voice"], "设置左纵排：场景/外观/布局/语音四节 nav");
+/* 左纵排五节（add-hive-voice-desk 起追加「语音」节；proposal-panel-config 追加「提案」节） */
+eq(railTabs.map((n) => n.props.id), ["jyv-railTab-scene", "jyv-railTab-appearance", "jyv-railTab-layout", "jyv-railTab-voice", "jyv-railTab-proposal"], "设置左纵排：场景/外观/布局/语音/提案五节 nav");
 ok(typeof guardRef.current === "function", "设置模态守卫已注册（guardRef.current）");
 ok(String(collect(settingsModal, (n) => String(n.props.className ?? "").includes("jyv-railNav")).at(0)?.props["aria-orientation"]) === "vertical", "nav rail 纵向（tablist 上下键语义）");
 /* 布局节滑杆 onChange → setSettings（即时生效路径） */

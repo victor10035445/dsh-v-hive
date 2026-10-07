@@ -26,7 +26,7 @@ import { HiveScene } from "./hive/scene.mjs";
 import { deriveWorld, sessionsBriefOf } from "./bee-model.mjs";
 import { sessionsBriefStore } from "./brief.mjs";
 import { keyboardGuarded } from "./hive/keyboard.mjs";
-import { fetchState, putState, sendCommand, subscribeLayout, hatchBee, laneAction, fetchModels, resetLatch, summonBee, fetchImportButtons, fetchProposals, setProposalStatus, voiceStatus, voiceConfig, voiceIndex, voiceAsr, voiceAnswer } from "./api.mjs";
+import { fetchState, putState, sendCommand, subscribeLayout, hatchBee, laneAction, fetchModels, resetLatch, summonBee, fetchImportButtons, fetchProposals, setProposalStatus, setProposalStatuses, voiceStatus, voiceConfig, voiceIndex, voiceAsr, voiceAnswer } from "./api.mjs";
 import {
   appendPrompt,
   workerBeeIdOf,
@@ -44,10 +44,16 @@ import { validateBeeTypesDraft, normalizeBeeTypes, BEE_APPEARANCE_MODELS, DEFAUL
 /* 模型/推理档位下拉共享派生（add-hotbar-llm-model-and-import D5/R3）：两维键 +
    模型选项 + 档位选项三层纯函数——指令编辑模态是唯一消费方（值轨道单源化）。 */
 import { MODEL_KEY_NONE, buildModelOptions, effortOptionsOf, modelKeyOf } from "./model-select.mjs";
-/* 提案面板纯逻辑（add-proposal-panel 5.x）：状态枚举（色点 + i18n 名称）、状态位键
-   构造、报告让位 reserve（原 status-cards.mjs 的 statusBarReserve 换主迁入）。 */
-import { PROPOSAL_STATUSES, panelReserve, proposalStateKey, proposalStatusColor } from "./proposals.mjs";
-import { hiveStore, beeTypesStore, beeEngineStore, hotbarsStore, proposalsStore, sanitizeLayout, LAYOUT_DEFAULTS, PANEL_LIMITS, BAR_LIMITS, REPORT_ROWS_LIMIT, CHROME_SCHEMES } from "./store.mjs";
+/* 模板插值纯函数（proposal-panel-config 3.2 补导入）：提案指令卡的 `{change}` 插值
+   一直调用 `interpolateTemplate` 却**从未导入**（add-proposal-panel 遗留缺陷——
+   点击提案卡必抛 ReferenceError）。capabilities.mjs 零 node 内建依赖、可进浏览器包，
+   故直接引入该纯函数（与宿主同源同一实现，SHALL NOT 复制第二份插值语义）。 */
+import { interpolateTemplate } from "./capabilities.mjs";
+/* 提案面板纯逻辑（add-proposal-panel 5.x；proposal-panel-config 3.x）：有效状态列表
+   与名称回退链、状态位键构造、报告让位 reserve（原 status-cards.mjs 的 statusBarReserve
+   换主迁入）、面板行数折算常量。 */
+import { PROPOSAL_ROW_PX, PROPOSAL_STATUSES, PROPOSAL_STATUS_IDS, buildProposalStatusName, effectiveProposalStatuses, isKnownProposalStatus, panelReserve, proposalStateKey, proposalStatusColor, sanitizeProposalStatusesDraft } from "./proposals.mjs";
+import { hiveStore, beeTypesStore, beeEngineStore, hotbarsStore, proposalsStore, sanitizeLayout, sanitizeProposalRows, LAYOUT_DEFAULTS, PANEL_LIMITS, BAR_LIMITS, REPORT_ROWS_LIMIT, PROPOSAL_ROWS_LIMIT, CHROME_SCHEMES } from "./store.mjs";
 import { CSS } from "./styles.mjs";
 import { APPEARANCE_DEFAULTS, APPEARANCE_REV } from "./hive/palette.mjs";
 import { CombatLogFeed, EV_KIND } from "./hive/combat-log.mjs";
@@ -519,6 +525,7 @@ const zh = {
   "hive.settings.navAppearance": "外观",
   "hive.settings.navLayout": "布局",
   "hive.settings.navVoice": "语音",
+  "hive.settings.navProposal": "提案",
   "hive.voice.title": "语音工作台",
   "hive.voice.close": "收起语音工作台",
   "hive.voice.entryDisabled": "语音未配置：设置智谱 key 后可用",
@@ -630,6 +637,20 @@ const zh = {
   "hive.settings.reportGroup": "作战报告（左下角面板）",
   "hive.settings.reportRows": "可视行数",
   "hive.settings.reportRowsHint": "面板锚定左下角；列表按行数定高，超出滚动",
+  "hive.settings.proposalPanelGroup": "提案面板（画布左缘）",
+  "hive.settings.proposalRows": "可视卡片行数",
+  "hive.settings.proposalRowsHint": "面板随提案数自然增高，到本行数封顶后才内部滚动；同时受画布可用高度封顶——下缘停在作战报告/道具栏上方，让位恒高于本设置",
+  "hive.settings.proposalStatusGroup": "状态列表",
+  "hive.settings.proposalStatusHint": "用于提案卡标记与指令卡「执行成功后置状态」。名称留空则出厂状态按界面语言显示、自定义状态显示其 id；删除某状态后，已打该状态的提案保留数据但不再显示标记，同名状态重新加回即恢复显示。",
+  "hive.settings.proposalStatusColor": "状态颜色",
+  "hive.settings.proposalStatusNamePlaceholder": "显示名称（可留空）",
+  "hive.settings.proposalStatusAdd": "添加状态",
+  "hive.settings.proposalStatusRemove": "删除该状态",
+  "hive.settings.proposalStatusRestore": "恢复默认列表",
+  "hive.settings.proposalStatusSave": "保存到宿主",
+  "hive.settings.proposalStatusDirty": "有未保存的修改",
+  "hive.settings.proposalStatusSaved": "状态列表已保存（全部页签即时收敛）",
+  "hive.settings.proposalStatusSaveFailed": "状态列表保存失败：{err}",
   "hive.settings.layoutHint": "调整即时生效，仅保存在本页签",
   "hive.settings.resetAll": "恢复默认",
   "hive.hb.title": "指令编辑",
@@ -662,6 +683,8 @@ const zh = {
   "hive.hb.proposalAutoSendHint": "勾选后点击卡片直接发送；不勾选则填入输入框供审查回车（该路径不置状态）",
   "hive.hb.proposalPromptHint": "模板：{change} = 选中提案名；{{ 与 }} 会还原为单个花括号",
   "hive.hb.proposalPromptPlaceholder": "如：继续推进 {change}，先读 proposal.md",
+  "hive.hb.proposalCiteName": "引用提案目录",
+  "hive.hb.proposalCiteNameHint": "勾选后执行时把 @提案名 放在提示词最前面（默认勾选）；模板已含 {change} 时可取消勾选以避免提案名出现两次",
   "hive.hb.overflow": "超出阵列容量 {n} 个槽位——保存允许，但超出部分不在道具栏渲染",
   "hive.hb.dirty": "有未保存的修改",
   "hive.hb.saveStale": "保存未被宿主持久化（宿主半区可能是旧版本）——请重启 dsh 后重试",
@@ -723,9 +746,11 @@ const zh = {
   "hive.proposal.empty": "暂无未归档提案。",
   "hive.proposal.error": "提案清单拉取失败——点击刷新重试。",
   "hive.proposal.status.none": "不设置",
+  "hive.proposal.status.deleted": "（已删除）",
   "hive.proposal.status.reviewed": "已审阅",
   "hive.proposal.status.executed": "已执行",
   "hive.proposal.status.paused": "已暂停",
+  "hive.proposal.status.archived": "已归档",
   "hive.proposal.toast.statusSet": "已更新提案状态",
   "hive.proposal.toast.statusFailed": "状态写入失败：{err}",
   "hive.proposal.toast.missingVars": "模板占位符未插值：{names}（未发送）",
@@ -965,6 +990,7 @@ const en = {
   "hive.settings.navAppearance": "Appearance",
   "hive.settings.navLayout": "Layout",
   "hive.settings.navVoice": "Voice",
+  "hive.settings.navProposal": "Proposals",
   "hive.voice.title": "Voice desk",
   "hive.voice.close": "Collapse voice desk",
   "hive.voice.entryDisabled": "Voice not configured: set a Zhipu key first",
@@ -1076,6 +1102,20 @@ const en = {
   "hive.settings.reportGroup": "Combat report (bottom-left panel)",
   "hive.settings.reportRows": "Visible rows",
   "hive.settings.reportRowsHint": "Panel is anchored bottom-left; the list height follows the row count and scrolls beyond it",
+  "hive.settings.proposalPanelGroup": "Proposal panel (canvas left edge)",
+  "hive.settings.proposalRows": "Visible card rows",
+  "hive.settings.proposalRowsHint": "The panel grows with the proposal count and only scrolls once it hits this row limit; the canvas available height also caps it — its bottom edge stops above the combat report / hotbar, and that reserve always wins over this setting",
+  "hive.settings.proposalStatusGroup": "Status list",
+  "hive.settings.proposalStatusHint": "Used for card markers and for the command-card \"set status on success\". Leave a name empty to show factory statuses in the UI language (custom statuses then show their id). Deleting a status keeps existing stamps as data but stops showing the marker; re-adding the same id brings it back.",
+  "hive.settings.proposalStatusColor": "Status colour",
+  "hive.settings.proposalStatusNamePlaceholder": "Display name (optional)",
+  "hive.settings.proposalStatusAdd": "Add status",
+  "hive.settings.proposalStatusRemove": "Delete this status",
+  "hive.settings.proposalStatusRestore": "Restore default list",
+  "hive.settings.proposalStatusSave": "Save to host",
+  "hive.settings.proposalStatusDirty": "Unsaved changes",
+  "hive.settings.proposalStatusSaved": "Status list saved (all tabs converge immediately)",
+  "hive.settings.proposalStatusSaveFailed": "Failed to save the status list: {err}",
   "hive.settings.layoutHint": "Applies instantly; stored per tab only",
   "hive.settings.resetAll": "Reset to defaults",
   "hive.hb.title": "Command editor",
@@ -1100,14 +1140,16 @@ const en = {
   "hive.hb.autoSendHint": "Checked = a click sends directly; unchecked = fills the composer for review",
   "hive.hb.pureSummonHint": "Empty prompt = summon only (no message sent)",
   "hive.hb.summonOffHint": "Summon off: prompt not accepted; the card renders disabled in the hotbar",
-  /* 提案栏节（add-proposal-panel 5.6/5.7） */
-  "hive.hb.tabProposal": "提案栏",
-  "hive.hb.setStatus": "执行成功后置状态",
-  "hive.hb.proposalSummonHint": "勾选后点击卡片在提案所属工作区召唤新蜂；不勾选则发给当前会话蜂",
-  "hive.hb.proposalSlotHint": "提示词模板中的 {change} 会在执行时替换为选中的提案名；写 {{change}} 得到字面 {change}（不被替换）",
-  "hive.hb.proposalAutoSendHint": "勾选后点击卡片直接发送；不勾选则填入输入框供审查回车（该路径不置状态）",
-  "hive.hb.proposalPromptHint": "模板：{change} = 选中提案名；{{ 与 }} 会还原为单个花括号",
-  "hive.hb.proposalPromptPlaceholder": "如：继续推进 {change}，先读 proposal.md",
+  /* 提案栏节（add-proposal-panel 5.6/5.7；proposal-panel-config 5.2 补齐英文） */
+  "hive.hb.tabProposal": "Proposal bar",
+  "hive.hb.setStatus": "Status on success",
+  "hive.hb.proposalSummonHint": "Checked = clicking the card summons a new bee in the proposal's workspace; unchecked = send to the current session bee",
+  "hive.hb.proposalSlotHint": "The {change} placeholder in the template is replaced with the selected proposal name at run time; write {{change}} for a literal {change}",
+  "hive.hb.proposalAutoSendHint": "Checked = a click sends directly; unchecked = fills the composer for review (that path does not set the status)",
+  "hive.hb.proposalPromptHint": "Template: {change} = selected proposal name; {{ and }} collapse to a single brace",
+  "hive.hb.proposalPromptPlaceholder": "e.g. Continue {change}, read proposal.md first",
+  "hive.hb.proposalCiteName": "Cite the proposal directory",
+  "hive.hb.proposalCiteNameHint": "Checked (default) prepends @proposal-name to the prompt before sending; uncheck it when the template already contains {change} to avoid the name appearing twice",
   "hive.hb.overflow": "{n} slots exceed the grid — saved, but the overflow is not rendered in the hotbar",
   "hive.hb.dirty": "Unsaved changes",
   "hive.hb.saveStale": "Save was not persisted by the host (host half may be outdated) — restart dsh and retry",
@@ -1161,22 +1203,24 @@ const en = {
   "hive.panel.empty": "Empty studio — no workers yet",
   "hive.panel.drones": "Drones: {a} active / {n} total",
   "hive.panel.selected": "{n} selected",
-  /* 提案面板与提案指令栏（add-proposal-panel 5.7） */
-  "hive.proposal.aria": "提案面板",
-  "hive.proposal.title": "提案",
-  "hive.proposal.refresh": "刷新提案清单",
-  "hive.proposal.refreshing": "正在刷新…",
-  "hive.proposal.empty": "暂无未归档提案。",
-  "hive.proposal.error": "提案清单拉取失败——点击刷新重试。",
-  "hive.proposal.status.none": "不设置",
-  "hive.proposal.status.reviewed": "已审阅",
-  "hive.proposal.status.executed": "已执行",
-  "hive.proposal.status.paused": "已暂停",
-  "hive.proposal.toast.statusSet": "已更新提案状态",
-  "hive.proposal.toast.statusFailed": "状态写入失败：{err}",
-  "hive.proposal.toast.missingVars": "模板占位符未插值：{names}（未发送）",
-  "hive.proposal.toast.badTemplate": "模板语法非法（花括号不成对，未发送）",
-  "hive.proposal.toast.sendFailed": "提案指令发送失败",
+  /* 提案面板与提案指令栏（add-proposal-panel 5.7；proposal-panel-config 5.2 补齐英文） */
+  "hive.proposal.aria": "Proposal panel",
+  "hive.proposal.title": "Proposals",
+  "hive.proposal.refresh": "Refresh proposal list",
+  "hive.proposal.refreshing": "Refreshing…",
+  "hive.proposal.empty": "No open proposals.",
+  "hive.proposal.error": "Failed to load proposals — click refresh to retry.",
+  "hive.proposal.status.none": "Leave unchanged",
+  "hive.proposal.status.deleted": "(deleted)",
+  "hive.proposal.status.reviewed": "Reviewed",
+  "hive.proposal.status.executed": "Executed",
+  "hive.proposal.status.paused": "Paused",
+  "hive.proposal.status.archived": "Archived",
+  "hive.proposal.toast.statusSet": "Proposal status updated",
+  "hive.proposal.toast.statusFailed": "Failed to write status: {err}",
+  "hive.proposal.toast.missingVars": "Template placeholders not interpolated: {names} (not sent)",
+  "hive.proposal.toast.badTemplate": "Invalid template syntax (unbalanced braces, not sent)",
+  "hive.proposal.toast.sendFailed": "Failed to send the proposal command",
   "hive.swarm.title": "Bee swarm editor",
   "hive.swarm.close": "Close the bee swarm editor",
   "hive.swarm.tabTypes": "Bee types",
@@ -1761,6 +1805,26 @@ function createController(ctx, notify) {
     /** 当前布局文档的提案状态位（`proposalStates` 的读取面；文档镜像即权威）。 */
     proposalStates() {
       return layout?.proposalStates ?? {};
+    },
+
+    /**
+     * **有效状态列表**（proposal-panel-config 3.1/D2）：`doc.proposalStatuses ?? 出厂四值`
+     * ——缺省合并在动作面**单点**完成（卡片渲染、执行守卫、槽位下拉、设置节编辑器四处
+     * 共用，SHALL NOT 各自写一份兜底）。列表随 layout-changed 文档镜像流动（`proposalStates`
+     * 同通道；`hotbarsStore` 同源三路 + 每次 rebuild 的 worldVersion tick 驱动重渲染）。
+     */
+    proposalStatuses() {
+      return effectiveProposalStatuses(layout?.proposalStatuses);
+    },
+
+    /**
+     * 状态列表整单替换（专用路由；宿主持久化 + SSE 广播 → 跨页签自然收敛）。
+     * 成功即重拉清单：卡片标记按新列表即时重算（列表外的孤儿戳转为无标记）。
+     */
+    async setProposalStatuses(list) {
+      const result = await setProposalStatuses(list);
+      if (result.ok === true) await refreshProposals();
+      return result;
     },
 
     /** 提案状态位置位（专用路由；宿主持久化 + SSE 广播 → 跨页签自然收敛）。 */
@@ -2884,16 +2948,22 @@ function HivePage(props) {
     }
   };
 
-  /* 提案指令卡（add-proposal-panel 6.1/D6/D7）：`{change}` 插值 fail-safe →
-     两条宿主通道分流 → 「宿主已接受」且 `setStatus` 非空才置位。
+  /* 提案指令卡（add-proposal-panel 6.1/D6/D7；proposal-panel-config 3.2/D4/D6）：
+     `{change}` 插值 fail-safe → citeName 前置 `@<提案名> ` → 两条宿主通道分流 →
+     「宿主已接受」且 `setStatus` **在当前列表内**才置位。
      在途锁（proposalBusy）：双击 SHALL NOT 产生两个新蜂。 */
   const [proposalBusy, setProposalBusy] = useState(false);
   const fillTemplate = (key, vars) =>
     String(t(key)).replace(/\{(\w+)\}/g, (whole, name) => (name in vars ? String(vars[name]) : whole));
 
-  /** 执行成功后置位（仅「宿主已接受」通道调用；填稿通道 SHALL NOT 调用）。 */
+  /** 执行成功后置位（仅「宿主已接受」通道调用；填稿通道 SHALL NOT 调用）。
+   *  **失效引用静默跳过（D4）**：`setStatus` 不在当前状态列表 → 不置位、不报错、不 toast
+   *  （即「默认不改变状态」——用户删掉状态后旧指令卡自然退化为不改状态，而不是弹一条
+   *  无从处置的错误）。列表取动作面有效列表（与本页签镜像同源）。 */
   const applyProposalStatus = async (status, pick) => {
     if (!status || !pick) return;
+    const list = ctl().actions.proposalStatuses?.() ?? PROPOSAL_STATUSES;
+    if (!isKnownProposalStatus(list, status)) return; // 静默跳过（无 toast、无报错）
     const result = await ctl().actions.setProposalStatus?.({
       workspaceId: pick.workspaceId,
       name: pick.name,
@@ -2919,7 +2989,11 @@ function HivePage(props) {
       );
       return;
     }
-    const prompt = interpolated.text;
+    /* citeName 前置（D6）：插值**之后**把提案名以 `@<提案名> ` 放到提示词最前
+       （前置文本无花括号，不参与插值）；`!== false` = 读取缺省勾选（旧槽位自动获得
+       新行为）。直发/召唤/填稿三通道同一体——故在通道分流前一次成型。 */
+    const cited = slot.citeName !== false && pick.name ? "@" + pick.name + " " + interpolated.text : interpolated.text;
+    const prompt = cited;
     const status = typeof slot.setStatus === "string" ? slot.setStatus : "";
     setProposalBusy(true);
     try {
@@ -3224,6 +3298,7 @@ function HivePage(props) {
             onRefreshVoiceStatus={() => setVoiceStatusSeq((n) => n + 1)}
             onSaveVoiceConfig={saveVoiceConfig}
             workspaces={voiceWorkspaces}
+            ctl={ctl}
           />
         ) : null}
         {swarmOpen ? (
@@ -3254,6 +3329,7 @@ function HivePage(props) {
             onNotify={(text, kind) => notify?.(text, kind)}
             modelCatalog={modelCatalog}
             modelState={modelState}
+            ctl={ctl}
           />
         ) : null}
       </div>
@@ -3843,7 +3919,7 @@ function BeeSwarmModal({ t, beeTypes, guardRef, onClose, onSave, onNotify, previ
  *  左 nav rail（场景/外观/布局，上下/Home/End roving tabindex）+ 右内容滚动区。
  *  自绘框架（不 import 官方组件、不经 createPortal——bundle 纯净门），样式全走
  *  --dsw-alias-* token；「布局」节提供右侧/底部阵列 m×n 显示参数（localStorage）。 */
-function HiveSettingsModal({ t, settings, setSettings, guardRef, onClose, voiceStatusState, onRefreshVoiceStatus, onSaveVoiceConfig, workspaces }) {
+function HiveSettingsModal({ t, settings, setSettings, guardRef, onClose, voiceStatusState, onRefreshVoiceStatus, onSaveVoiceConfig, workspaces, ctl }) {
   const [section, setSection] = useState("scene");
 
   /* 关闭请求统一入口：设置即时生效无脏态 → 直接关。
@@ -3862,7 +3938,8 @@ function HiveSettingsModal({ t, settings, setSettings, guardRef, onClose, voiceS
         { key: "scene", icon: "◇", label: t("hive.settings.navScene") },
         { key: "appearance", icon: "✦", label: t("hive.settings.navAppearance") },
         { key: "layout", icon: "▦", label: t("hive.settings.navLayout") },
-        { key: "voice", icon: "🎙", label: t("hive.settings.navVoice") }
+        { key: "voice", icon: "🎙", label: t("hive.settings.navVoice") },
+        { key: "proposal", icon: "◎", label: t("hive.settings.navProposal") }
       ]}
       active={section}
       onNavigate={setSection}
@@ -3886,6 +3963,19 @@ function HiveSettingsModal({ t, settings, setSettings, guardRef, onClose, voiceS
           onRefreshStatus={onRefreshVoiceStatus}
           onSaveHostConfig={onSaveVoiceConfig}
           workspaces={workspaces}
+        />
+      </div>
+      {/* 「提案」节（proposal-panel-config 4.x）：高度滑杆（页签设置即时生效）+
+          状态列表编辑器（本节草稿 + 显式保存，语音配置节同款形态）。
+          `statuses` 取动作面**有效列表**（缺省合并单点）；`onSaveStatuses` 为
+          专用路由整单替换（保存后宿主 SSE 广播 → 镜像回流 → 草稿自动落回干净态）。 */}
+      <div className="jyv-modalBody" role="tabpanel" id="jyv-railPanel-proposal" aria-labelledby="jyv-railTab-proposal" hidden={section !== "proposal"}>
+        <ProposalSettingsBody
+          t={t}
+          settings={settings}
+          setSettings={setSettings}
+          statuses={ctl?.()?.actions?.proposalStatuses?.()}
+          onSaveStatuses={(list) => ctl?.()?.actions?.setProposalStatuses?.(list) ?? Promise.resolve({ ok: false, error: "controller unavailable" })}
         />
       </div>
     </RailModal>
@@ -4131,6 +4221,7 @@ function LayoutSettingsBody({ t, settings, setSettings }) {
               renderer: "webgl",
               reportCollapsed: false, // 作战报告面板展开态（hive-combat-log，沿 showFps 先例覆盖）
               reportRows: 8, // 作战报告面板可视行数默认（hive-combat-log）
+              proposalRows: 24, // 提案面板可视卡片行数默认（proposal-panel-config D5；≈现状高屏可视量级）
               cameraPitchDeg: 45, // 俯角默认（二轮定稿 45）
               rightDragSpin: false, // 右键旋转默认关 = 全向平移（D4）
               appearance: { ...APPEARANCE_DEFAULTS, rev: APPEARANCE_REV },
@@ -4143,6 +4234,173 @@ function LayoutSettingsBody({ t, settings, setSettings }) {
       </div>
     </div>
   );
+}
+
+/* ------------------------------------------------------------------ *
+ * 「提案」节（proposal-panel-config 4.1–4.3，design D2/D5/D7）：
+ *  - 高度滑杆（可视卡片行数，界 3–32、默认 24）：**即时生效**的页签设置
+ *    （localStorage，reportRows 先例）；面板经 CSS 变量消费，画布封顶与让位不变；
+ *  - 状态列表编辑器：**本节草稿 + 显式保存**（语音配置节同款形态——文本输入/取色
+ *    天然是草稿操作，不走布局文档 PUT 的 revision/草稿-409 流程）；保存走专用路由
+ *    整单替换。草稿干净时跟随 layout 镜像（跨页签 SSE 收敛，HotbarsModal 同款口径），
+ *    有未保存改动时 hint 提示且草稿不被镜像覆盖；
+ *  - 「恢复默认列表」= 草稿整单替换为出厂四值（**仍需保存落盘**，防误触）。
+ * ------------------------------------------------------------------ */
+
+function ProposalSettingsBody({ t, settings, setSettings, statuses, onSaveStatuses }) {
+  const patch = (p) => setSettings?.(p);
+  const rows = sanitizeProposalRows(settings?.proposalRows);
+
+  /* 镜像（权威在宿主文档，随 layout-changed 流动）；缺省合并单点在调用方（动作面）
+     完成——本组件不再自带兜底，避免两处 `??` 口径漂移。 */
+  const mirrored = Array.isArray(statuses) && statuses.length > 0 ? statuses : PROPOSAL_STATUSES;
+  const [draft, setDraft] = useState(() => sanitizeProposalStatusesDraft(mirrored));
+  const [note, setNote] = useState(null); // { kind: "ok"|"err", text }
+  const [busy, setBusy] = useState(false);
+
+  /* 脏判定：草稿（编辑态，name 可含空白/isNew）与镜像的**归一化形态**逐字比对——
+     直接用 sanitizeProposalStatusesDraft 把两侧拉齐（name 空白视为空、颜色已 trim）。 */
+  const fingerprint = (list) =>
+    JSON.stringify(
+      sanitizeProposalStatusesDraft(list).map((row) => [row.id, row.color, row.name.trim()])
+    );
+  const dirty = fingerprint(draft) !== fingerprint(mirrored);
+  const dirtyRef = useRef(false);
+  dirtyRef.current = dirty;
+
+  /* 干净草稿跟随镜像（跨页签收敛）；脏草稿仅本地（不被镜像覆盖——D7 硬要求）。 */
+  useEffect(() => {
+    if (!dirtyRef.current) setDraft(sanitizeProposalStatusesDraft(mirrored));
+  }, [mirrored]);
+
+  const patchRow = (index, p) => setDraft((prev) => prev.map((row, i) => (i === index ? { ...row, ...p } : row)));
+  const addRow = () => {
+    setNote(null);
+    /* id 与槽位行同款生成器（写入时一次生成、构造后不参与解析）；
+       **长度必须 ≤ PROPOSAL_STATUS_ID_MAX**（宿主写侧校验同界，见 newShortId 注释）。 */
+    setDraft((prev) => [...prev, { id: newProposalStatusId(), color: PROPOSAL_STATUSES[0].color, name: "" }]);
+  };
+  const removeRow = (index) => {
+    setNote(null);
+    setDraft((prev) => prev.filter((_, i) => i !== index));
+  };
+  const restoreDefaults = () => {
+    setNote(null);
+    /* 草稿整单替换为出厂四值（**仍需「保存到宿主」落盘**——防呆而非自动写）。 */
+    setDraft(PROPOSAL_STATUSES.map((entry) => ({ id: entry.id, color: entry.color, name: "" })));
+  };
+
+  const save = async () => {
+    if (busy) return;
+    setBusy(true);
+    setNote(null);
+    /* 载荷：name 空白不携带该键（= 走名称回退链）；id/color 原样（宿主校验并归一化）。 */
+    const payload = draft.map((row) => ({
+      id: row.id,
+      color: row.color,
+      ...(row.name.trim() ? { name: row.name.trim() } : {})
+    }));
+    const result = await onSaveStatuses?.(payload);
+    setBusy(false);
+    if (result?.ok) {
+      setNote({ kind: "ok", text: t("hive.settings.proposalStatusSaved") });
+      return;
+    }
+    /* 400 字段级原因呈现（含序号路径，如 proposalStatuses.2.color）——草稿保持不动，
+       用户据此就地修正；`code` 在场时附具名原因（duplicate-id / too-many）。 */
+    const field = result?.field ? String(result.field) + " " : "";
+    const code = result?.code ? "(" + String(result.code) + ")" : "";
+    setNote({
+      kind: "err",
+      text: t("hive.settings.proposalStatusSaveFailed")
+        .replace("{err}", field + String(result?.error ?? "") + (code ? " " + code : ""))
+    });
+  };
+
+  return (
+    <div className="jyv-settings" data-testid="proposal-settings">
+      <SetGroup label={t("hive.settings.proposalPanelGroup")} />
+      <SetRow label={t("hive.settings.proposalRows")} hint={t("hive.settings.proposalRowsHint")}>
+        <SetSlider
+          value={rows}
+          min={PROPOSAL_ROWS_LIMIT[0]}
+          max={PROPOSAL_ROWS_LIMIT[1]}
+          step={1}
+          format={(v) => String(v)}
+          onChange={(v) => patch({ proposalRows: v })}
+        />
+      </SetRow>
+
+      <SetGroup label={t("hive.settings.proposalStatusGroup")} />
+      <div className="jyv-voiceDim">{t("hive.settings.proposalStatusHint")}</div>
+      <div className="jyv-proposalStatusList" data-testid="proposal-status-list">
+        {draft.map((row, index) => (
+          <div className="jyv-proposalStatusRow" key={row.id + ":" + index}>
+            <input
+              type="color"
+              className="jyv-proposalStatusColor"
+              value={row.color}
+              aria-label={t("hive.settings.proposalStatusColor")}
+              data-testid={"proposal-status-color-" + index}
+              onChange={(e) => patchRow(index, { color: e.target.value })}
+            />
+            <input
+              type="text"
+              className="jyv-proposalStatusNameInput"
+              value={row.name}
+              maxLength={32}
+              spellCheck={false}
+              autoComplete="off"
+              placeholder={statusNamePlaceholder(t, mirrored, row)}
+              data-testid={"proposal-status-name-" + index}
+              onChange={(e) => patchRow(index, { name: e.target.value })}
+            />
+            <span className="jyv-proposalStatusId" title={row.id}>{row.id}</span>
+            <button
+              type="button"
+              className="jyv-proposalStatusRemove"
+              title={t("hive.settings.proposalStatusRemove")}
+              aria-label={t("hive.settings.proposalStatusRemove")}
+              data-testid={"proposal-status-remove-" + index}
+              onClick={() => removeRow(index)}
+            >
+              ×
+            </button>
+          </div>
+        ))}
+      </div>
+      <div className="jyv-setActions">
+        <button type="button" className="jyv-voiceMini" data-testid="proposal-status-add" onClick={addRow}>
+          {t("hive.settings.proposalStatusAdd")}
+        </button>
+        <button type="button" className="jyv-voiceMini" data-testid="proposal-status-restore" onClick={restoreDefaults}>
+          {t("hive.settings.proposalStatusRestore")}
+        </button>
+        <button
+          type="button"
+          className="jyv-setReset"
+          disabled={busy}
+          data-testid="proposal-status-save"
+          onClick={save}
+        >
+          {busy ? t("hive.qc.saving") : t("hive.settings.proposalStatusSave")}
+        </button>
+        {dirty ? <span className="jyv-qcDirty">{t("hive.settings.proposalStatusDirty")}</span> : null}
+        {note ? (
+          <span className={note.kind === "ok" ? "jyv-setHint" : "jyv-qcError"} role={note.kind === "ok" ? undefined : "alert"}>
+            {note.text}
+          </span>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+/** 状态名称输入框占位：工厂 id 空缺名称时以 i18n 名称作占位（用户看得见回退结果）。 */
+function statusNamePlaceholder(t, mirrored, row) {
+  const entry = (mirrored ?? []).find((e) => e?.id === row?.id);
+  const fallback = entry?.name ?? (PROPOSAL_STATUS_IDS.includes(row?.id) ? t("hive.proposal.status." + row.id) : row?.id ?? "");
+  return fallback || t("hive.settings.proposalStatusNamePlaceholder");
 }
 
 /* ------------------------------------------------------------------ *
@@ -4617,8 +4875,49 @@ function ProposalPanel({ t, ctl, settings, disabled, selectedProposal, onSelect,
   /* 状态位（被动枚举位）：随 layout-changed 文档镜像流动，经控制器直读。 */
   const states = ctl().actions.proposalStates?.() ?? {};
 
+  /* **有效状态列表**（proposal-panel-config 3.3/D3/D4）：色点与名称**数据驱动**取自
+     当前列表条目（缺省合并单点在动作面）；列表外的孤儿戳无标记呈现（数据保留）。
+     名称回退链（字面 name → 工厂 id i18n → 自定义 id 字面）走纯函数单点，
+     与本组件同一份 t（zh/en 不被出厂中文名绑架）。 */
+  const statusList = ctl().actions.proposalStatuses?.() ?? PROPOSAL_STATUSES;
+  const statusNameOf = buildProposalStatusName(statusList, t);
+
   /* 报告让位 reserve（R13：机制保留换主）：收起 = pill 高；展开 = rows×24 + 头部 + 边距。 */
   const reservePx = panelReserve({ reportCollapsed: settings.reportCollapsed === true, reportRows: settings.reportRows });
+
+  /* ── 面板高度与锚定（proposal-panel-config 修正，用户反馈「2 个提案就要滚动」） ──
+     可用带（band）= 画布顶到**让位线**（作战报告/道具栏上缘）之间的高度；面板在带内
+     **垂直居中**，高度 = min(行数上限, 可用带)。带高必须实测——CSS 里
+     `calc(100% - reserve)` 之类的百分比在 `max-height` 上解析不可靠（实测浏览器
+     算出 540px 却按 743px 排版，面板直接压到报告上），故这里把实测像素值下发为
+     `--jyv-proposalBandH`，CSS 侧只用像素运算。
+     实现要点：`top:0; bottom:var(--jyv-panelBottom); margin-block:auto` 是绝对定位盒
+     的居中惯用法（零百分比、零 transform），面板上下各留等量空白 → 居中且下缘永在
+     让位线之上；`max-height` 再按行数上限封顶（超出内部滚动）。 */
+  const panelRef = useRef(null);
+  const [bandH, setBandH] = useState(0);
+  useLayoutEffect(() => {
+    const el = panelRef.current;
+    const host = el?.parentElement;
+    if (!host || typeof ResizeObserver === "undefined") return undefined;
+    const measure = () => {
+      const rect = host.getBoundingClientRect();
+      /* 可用带 = 宿主高度 − 让位量（让位线以上）。reservePx 变化也要重量。 */
+      const next = Math.max(0, Math.round(rect.height - reservePx));
+      setBandH((prev) => (Math.abs(prev - next) > 1 ? next : prev));
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(host);
+    return () => ro.disconnect();
+  }, [reservePx]);
+
+  const proposalRows = sanitizeProposalRows(settings.proposalRows);
+  /* `--jyv-proposalMaxH` = **行数上限**（滑杆口径，与实测无关，便于断言与复用）；
+     `--jyv-proposalBandH` = 实测可用带（未测得时退化为行数上限，首帧不缺值）。
+     生效高度 = 二者之 min，由 CSS 侧 max-height 取（单一判定点）。 */
+  const rowCapPx = proposalRows * PROPOSAL_ROW_PX;
+  const bandPx = bandH > 0 ? bandH : rowCapPx;
 
   const refresh = () => {
     const run = onRefresh ?? (() => ctl().actions.refreshProposals?.());
@@ -4644,10 +4943,15 @@ function ProposalPanel({ t, ctl, settings, disabled, selectedProposal, onSelect,
 
   return (
     <div
+      ref={panelRef}
       className="jyv-proposalPanel"
       role="group"
       aria-label={t("hive.proposal.aria")}
-      style={{ "--jyv-panelBottom": "calc(76px + " + reservePx + "px)" }}
+      style={{
+        "--jyv-panelBottom": "calc(76px + " + reservePx + "px)",
+        "--jyv-proposalMaxH": rowCapPx + "px",
+        "--jyv-proposalBandH": bandPx + "px"
+      }}
     >
       <div className="jyv-proposalHead">
         <span className="jyv-proposalTitle">{t("hive.proposal.title")}</span>
@@ -4678,24 +4982,29 @@ function ProposalPanel({ t, ctl, settings, disabled, selectedProposal, onSelect,
             </div>
             {group.changes.map((change) => {
               const status = typeof change.status === "string" ? change.status : "";
-              const color = proposalStatusColor(status);
+              /* 标记（色点 + 名称 + 悬停时间戳）三处同取当前列表条目：列表外 → 三者皆无。
+                 宿主侧已按有效列表过滤（双保险），本地再查一次以对齐「镜像未更新的窗口」。 */
+              const color = proposalStatusColor(status, statusList);
+              const label = color ? statusNameOf(status) : "";
               const entry = states[proposalStateKey(group.workspaceId, change.name)];
               const on = selectedProposal?.workspaceId === group.workspaceId && selectedProposal?.name === change.name;
-              const stamp = Number.isFinite(entry?.at) ? new Date(entry.at).toLocaleString() : "";
+              /* 悬停时间戳：状态在列表内且有 at 才拼（无标记卡片只显示 change 名）。 */
+              const stamp = color && Number.isFinite(entry?.at) ? new Date(entry.at).toLocaleString() : "";
+              const title = stamp ? change.name + " · " + label + " · " + stamp : change.name;
               return (
                 <button
                   key={change.name}
                   type="button"
                   className="jyv-proposalCard"
                   data-on={on ? "true" : undefined}
-                  data-status={status || undefined}
-                  title={stamp ? change.name + " · " + t("hive.proposal.status." + status) + " · " + stamp : change.name}
+                  data-status={color ? status : undefined}
+                  title={title}
                   aria-pressed={on}
                   onClick={() => onSelect?.({ workspaceId: group.workspaceId, name: change.name })}
                 >
                   {color ? <span className="jyv-proposalDot" style={{ background: color }} aria-hidden="true" /> : null}
                   <span className="jyv-proposalName">{change.name}</span>
-                  {color ? <span className="jyv-proposalState">{t("hive.proposal.status." + status)}</span> : null}
+                  {color ? <span className="jyv-proposalState">{label}</span> : null}
                 </button>
               );
             })}
@@ -4714,17 +5023,46 @@ function ProposalPanel({ t, ctl, settings, disabled, selectedProposal, onSelect,
  * + 校验拒绝 + 容量超出提示 + 脏草稿离开提醒。
  * ------------------------------------------------------------------ */
 
-/** 槽位行 id（crypto.randomUUID 优先，非安全上下文退化为时间+随机）。 */
-function newSlotId() {
+/**
+ * 行 id 生成（槽位行与提案状态行共用）：**短于 32 字符**、栏内/列表内唯一的稳定键。
+ *
+ * **长度是硬约束**（proposal-panel-config 实测踩坑）：提案状态列表的宿主校验把
+ * `id` 长度上限定在 `PROPOSAL_STATUS_ID_MAX = 32`（spec「trim 后 ≤32 字符」），而
+ * `crypto.randomUUID()` 恰好是 36 字符——直接用它会让**任何新增状态行保存必 400**
+ * （`proposalStatuses.N.id invalid-entry`）。故这里不用 UUID，改用
+ * `前缀 + base36 时间戳 + base36 随机段`（约 24–28 字符）且**前缀按栏分派**
+ * （槽位 `slot-`、状态 `ps-`），既留在限内又保持可读。
+ *
+ * 唯一性口径：同毫秒同前缀的碰撞概率约 36^-8（随机段 8 位），且状态列表封顶 16 条
+ * ——工程上可忽略；真正由宿主保证的「列表内唯一」在保存时 400 兜底。
+ */
+function newShortId(prefix) {
+  const stamp = Date.now().toString(36);
+  let rand = "";
   try {
-    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
+    if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+      const buf = new Uint32Array(2);
+      crypto.getRandomValues(buf);
+      rand = buf[0].toString(36) + buf[1].toString(36);
+    }
   } catch {
     /* fallthrough */
   }
-  return "slot-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10);
+  if (!rand) rand = Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 8);
+  return prefix + stamp + "-" + rand;
 }
 
-function HotbarsModal({ t, hotbars, beeTypes, layout, guardRef, onClose, onSave, onNotify, modelCatalog, modelState }) {
+/** 槽位行 id（指令编辑各栏；≤32 字符稳定键）。 */
+function newSlotId() {
+  return newShortId("slot-");
+}
+
+/** 提案状态列表行 id（设置模态「提案」节；≤32 字符稳定键，id 只构造不反解）。 */
+function newProposalStatusId() {
+  return newShortId("ps-");
+}
+
+function HotbarsModal({ t, hotbars, beeTypes, layout, guardRef, onClose, onSave, onNotify, modelCatalog, modelState, ctl }) {
   const [section, setSection] = useState("hive");
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [selectedId, setSelectedId] = useState(null);
@@ -4781,15 +5119,16 @@ function HotbarsModal({ t, hotbars, beeTypes, layout, guardRef, onClose, onSave,
     }));
   const addSlot = () => {
     setError(null);
-    /* 形状三元按栏分派（context-hotbar-rework 5.x + add-proposal-panel 5.6）：
-       提案栏形状 = 提示词模板（必填）+ 新召唤开关（默认否）+ 状态置位缺省。 */
+    /* 形状三元按栏分派（context-hotbar-rework 5.x + add-proposal-panel 5.6 +
+       proposal-panel-config 4.4）：提案栏形状 = 提示词模板（必填）+ 新召唤开关
+       （默认否）+ 状态置位缺省 + **引用提案目录（默认勾选）**。 */
     const fresh =
       section === "bee"
         ? { id: newSlotId(), name: "", prompt: "", autoSend: false }
         : section === "hive"
           ? { id: newSlotId(), name: "", summon: false, autoSend: false }
           : section === "proposal"
-            ? { id: newSlotId(), name: "", summon: false, prompt: "", autoSend: false }
+            ? { id: newSlotId(), name: "", summon: false, prompt: "", autoSend: false, citeName: true }
             : { id: newSlotId(), name: "", createBee: true, autoSend: false };
     setDraft((prev) => ({ ...prev, [section]: [...prev[section], fresh] }));
     setSelectedId(fresh.id);
@@ -5109,20 +5448,48 @@ function HotbarsModal({ t, hotbars, beeTypes, layout, guardRef, onClose, onSave,
                       onChange={(e) => patchSlot(row.id, { prompt: e.target.value })}
                     />
                   </label>
-                  {/* 状态置位（提案栏专属，add-proposal-panel 5.6/D4）：受限枚举下拉
-                      「不设置 / 已审阅 / 已执行 / 已暂停」——不设置 = 本卡不改状态。 */}
+                  {/* 状态置位（提案栏专属，add-proposal-panel 5.6/D4；proposal-panel-config
+                      4.4/D4/D7）：下拉**改读镜像列表**（`ctl().actions.proposalStatuses()`，
+                      与卡片标记同一份数据源）——「不设置」首项 + 当前列表逐条（名称走
+                      回退链，色块呈现）；**已失效引用**（槽位 setStatus 不在列表内，
+                      如引用了一个被删除的状态）在首项后插入 `（已删除）` 占位项，
+                      且**保存保留原值**（SHALL NOT 静默改写为「不设置」——与 D4
+                      「同名复活回显」配套）。 */}
+                  {section === "proposal" ? (() => {
+                    const statusList = ctl?.()?.actions?.proposalStatuses?.() ?? PROPOSAL_STATUSES;
+                    const statusNameOf = buildProposalStatusName(statusList, t);
+                    const draftStatus = typeof row.setStatus === "string" ? row.setStatus : "";
+                    const orphan = draftStatus && !statusList.some((entry) => entry?.id === draftStatus);
+                    return (
+                      <label className="jyv-swarmField">
+                        <span>{t("hive.hb.setStatus")}</span>
+                        <select
+                          value={draftStatus}
+                          data-testid="hb-proposal-setStatus"
+                          onChange={(e) => patchSlot(row.id, { setStatus: e.target.value ? e.target.value : undefined })}
+                        >
+                          <option value="">{t("hive.proposal.status.none")}</option>
+                          {orphan ? (
+                            <option value={draftStatus}>{t("hive.proposal.status.deleted")}</option>
+                          ) : null}
+                          {statusList.map((entry) => (
+                            <option key={entry.id} value={entry.id}>{statusNameOf(entry.id)}</option>
+                          ))}
+                        </select>
+                      </label>
+                    );
+                  })() : null}
+                  {/* 引用提案目录（提案栏专属，proposal-panel-config 4.4/D6）：默认勾选
+                      （`!== false` 判定缺省）；hint 说明与手写 {change} 的叠加关系。 */}
                   {section === "proposal" ? (
-                    <label className="jyv-swarmField">
-                      <span>{t("hive.hb.setStatus")}</span>
-                      <select
-                        value={typeof row.setStatus === "string" ? row.setStatus : ""}
-                        onChange={(e) => patchSlot(row.id, { setStatus: e.target.value ? e.target.value : undefined })}
-                      >
-                        <option value="">{t("hive.proposal.status.none")}</option>
-                        {PROPOSAL_STATUSES.map((entry) => (
-                          <option key={entry.id} value={entry.id}>{t("hive.proposal.status." + entry.id)}</option>
-                        ))}
-                      </select>
+                    <label className="jyv-qcAuto" title={t("hive.hb.proposalCiteNameHint")}>
+                      <input
+                        type="checkbox"
+                        checked={row.citeName !== false}
+                        data-testid="hb-proposal-citeName"
+                        onChange={(e) => patchSlot(row.id, { citeName: e.target.checked })}
+                      />
+                      {t("hive.hb.proposalCiteName")}
                     </label>
                   ) : null}
                   <label className="jyv-qcAuto" title={section === "proposal" ? t("hive.hb.proposalAutoSendHint") : t("hive.hb.autoSendHint")}>
@@ -5384,4 +5751,4 @@ export function apply(ctx) {
    bundle 级冒烟直测渲染输出与交互 props；运行时行为不受影响。
    `proposalsStore` 一并导出：提案面板冒烟的清单注入点（沙箱无 EventSource/SSE，
    只能由 store 直接落 fixture——与 hotbars-ui-smoke 直测 store 同款纪律）。 */
-export { composerBridge, appendViaBridge, seedSummonDraft, HotbarBar, WorkerPanel, HiveSettingsModal, HotbarsModal, LayoutSettingsBody, BeeSwarmModal, ProposalPanel, proposalsStore, VoiceDeskPanel, VoiceSettingsBody, createVoiceDesk, assembleDeliveryPrompt };
+export { composerBridge, appendViaBridge, seedSummonDraft, HotbarBar, WorkerPanel, HiveSettingsModal, HotbarsModal, LayoutSettingsBody, ProposalSettingsBody, BeeSwarmModal, ProposalPanel, proposalsStore, VoiceDeskPanel, VoiceSettingsBody, createVoiceDesk, assembleDeliveryPrompt };

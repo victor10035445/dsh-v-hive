@@ -9,11 +9,13 @@ import {
   PANEL_LIMITS,
   BAR_LIMITS,
   REPORT_ROWS_LIMIT,
+  PROPOSAL_ROWS_LIMIT,
   LAYOUT_DEFAULTS,
   CHROME_SCHEMES,
   DEFAULT_SETTINGS,
   sanitizeLayout,
   sanitizeReportRows,
+  sanitizeProposalRows,
   normalizeSettings
 } from "./settings.mjs";
 import { normalizeHotbars } from "./hotbars.mjs";
@@ -21,7 +23,7 @@ import { normalizeHotbars } from "./hotbars.mjs";
 const SETTINGS_KEY = "dsh-v-hive:settings";
 
 /* 既有导出面保持不变（client.jsx 从本模块导入）：纯函数层原样再出口。 */
-export { PANEL_LIMITS, BAR_LIMITS, REPORT_ROWS_LIMIT, LAYOUT_DEFAULTS, CHROME_SCHEMES, DEFAULT_SETTINGS, sanitizeLayout };
+export { PANEL_LIMITS, BAR_LIMITS, REPORT_ROWS_LIMIT, PROPOSAL_ROWS_LIMIT, LAYOUT_DEFAULTS, CHROME_SCHEMES, DEFAULT_SETTINGS, sanitizeLayout, sanitizeProposalRows };
 
 function readLocal(key, fallback) {
   try {
@@ -73,6 +75,8 @@ export const hiveStore = defineStore({
       if (patch.layout) d.settings.layout = sanitizeLayout(d.settings.layout);
       /* 报告行数写侧净房（沿 layout 同纪律，防越界值落 localStorage） */
       if (patch.reportRows !== undefined) d.settings.reportRows = sanitizeReportRows(d.settings.reportRows);
+      /* 提案面板行数写侧净房（proposal-panel-config 1.2，同款纪律） */
+      if (patch.proposalRows !== undefined) d.settings.proposalRows = sanitizeProposalRows(d.settings.proposalRows);
       /* chrome 配色方案写侧净房（未知值落官方令牌默认） */
       if (patch.chromeScheme !== undefined && !CHROME_SCHEMES.includes(d.settings.chromeScheme)) {
         d.settings.chromeScheme = "default";

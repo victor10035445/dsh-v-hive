@@ -126,6 +126,30 @@ export async function setProposalStatus({ workspaceId, name, status } = {}) {
 }
 
 /**
+ * 提案状态列表写入（proposal-panel-config 2.2/3.1）：POST /proposals/statuses——
+ * **整单替换**（不做逐条增删路由）。宿主归一化 + persistDoc + SSE `layout-changed`
+ * 广播（跨页签自然收敛）；形状非法 / id 重复 / 超封顶 16 → 400 字段级原因且文档不变更。
+ * @param {Array<{id: string, color: string, name?: string}>} list
+ * @returns {Promise<{ok: true}|{ok: false, error: string, field?: string, code?: string}>}
+ */
+export async function setProposalStatuses(list) {
+  try {
+    const res = await fetch(API + "/proposals/statuses", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(Array.isArray(list) ? list : [])
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok || body.ok !== true) {
+      return { ok: false, error: body.error || res.status + " " + res.statusText, field: body.field, code: body.code };
+    }
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: String(error?.message || error) };
+  }
+}
+
+/**
  * 槽位召唤（context-hotbar-rework D4）：POST /summon——宿主 create → 绑蜂种 →
  * selectModel → 非空 prompt 且 autoSend 真时直调投递首条消息，否则只建不发；
  * 两分支均返 sessionId。蜂种/工作区缺失 → 404（body.field 字段级原因）。

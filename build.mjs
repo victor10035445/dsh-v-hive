@@ -22,7 +22,16 @@ const banner = `window.__ModuleLoader__.load({ id: "${PLUGIN_ID}", factory: (req
 var module = { exports: {} };
 var exports = module.exports;`;
 
-const footer = `return module.exports;
+const footer = `if (typeof window !== "undefined" && window.__JYV_HIVE_E2E__) {
+  /* e2e 探针钩子（默认关闭，正常路径零开销）：页面在加载 bundle **之前**置
+     window.__JYV_HIVE_E2E__ = true，工厂导出面即挂到该对象上——浏览器验收脚本据此
+     驱动**真实 store/组件**（如向 proposalsStore 落夹具后量面板几何），不必伪造 DOM，
+     也不必给产品代码开后门。
+     注意**不能用 __JYV_HIVE_DEBUG**：那是场景半区自己的调试句柄（scene 挂载时写入，
+     时序在模块求值之后），同名会被覆盖。 */
+  window.__JYV_HIVE_E2E__ = module.exports;
+}
+return module.exports;
 } });`;
 
 mkdirSync(new URL("./lib", import.meta.url), { recursive: true });

@@ -6,7 +6,7 @@
  * add-proposal-panel 增量：第四栏 `proposal`（提案指令栏，design D5）。
  *
  * 槽位形状（扁平，一套 schema + 按栏裁剪）：
- *   { id, name, summon?, beeTypeId?, createBee?, model?, prompt?, autoSend, setStatus? }
+ *   { id, name, summon?, beeTypeId?, createBee?, model?, prompt?, autoSend, setStatus?, citeName? }
  * 字段矩阵：
  *   - hive（巢栏）：summon 适用（默认否）；无 createBee；提示词/LLM 模型/蜂种仅召唤开启时有意义；
  *   - bee（蜂栏）：召唤灰置（恒否）、无 summon/beeTypeId/createBee；提示词必填；LLM 模型适用
@@ -14,15 +14,16 @@
  *   - floor（地板栏）：建巢恒开（无开关字段必要，createBee 指建蜂）；提示词/LLM 模型/蜂种仅建蜂开启时有意义；
  *   - proposal（提案栏）：summon 新召唤开关（默认否，召唤目标 = 提案所属工作区）；提示词**必填**
  *     （模板，支持 `{change}`）；蜂种/模型仅召唤开启时收（**读取路径裁剪**）；`setStatus`
- *     为执行成功后写入的卡片状态枚举值（optional，缺省剥离 = 本卡不改状态）。
+ *     为执行成功后写入的卡片状态 id（optional；**形状校验为非空字符串，不对代码常量枚举
+ *     封闭**——proposal-panel-config D4，取值是否在当前列表由执行点与置位路由判定）；
+ *     `citeName` = 执行前在提示词最前引用提案名的开关（optional，**读取缺省 = 勾选**，
+ *     消费点以 `slot.citeName !== false` 判定；缺省**不物化落盘**）。
  *
  * `model`（add-hotbar-llm-model-and-import D2，可选）= 指令卡的 LLM 对话模型绑定
  * `{ provider, model, reasoningEffort? }`（与 3D 外观模型 beeModel 无关）；缺省 = 未绑定
  * （跟随部署默认模型）。读取路径宽松：形状非法即剥离该字段而不丢槽位；写入路径严格
  * （validateSlotDraft 字段级拒绝 + 宿主 zod 同口径 400）。
  */
-
-import { PROPOSAL_STATUS_IDS } from "./proposals.mjs";
 
 /** 每栏槽位上限（审阅 F7：防滥用；宿主 zod 同界）。 */
 export const HOTBAR_COLUMN_LIMIT = 32;
@@ -47,9 +48,11 @@ function promptGate(kind, slot) {
   return true; // 蜂栏：提示词必填、恒启用（模型亦恒适用）
 }
 
-/** `setStatus` 受限枚举判定（与宿主 zod `z.enum(PROPOSAL_STATUS_IDS)` 同源同值域）。 */
+/** `setStatus` 形状判定（proposal-panel-config D4：**只校非空字符串**，SHALL NOT 对代码
+ *  常量枚举封闭——状态列表已是用户可配置数据，「是否在当前列表中」由置位路由（400）
+ *  与执行点（静默跳过）判定，形状校验只在两端做读取剥离 / 写入拒绝的分工）。 */
 export function isValidSlotStatus(raw) {
-  return typeof raw === "string" && PROPOSAL_STATUS_IDS.includes(raw);
+  return typeof raw === "string" && raw.trim().length > 0;
 }
 
 /**
@@ -123,8 +126,14 @@ export function normalizeSlot(kind, raw) {
       const model = normalizeSlotModel(raw.model);
       if (model) slot.model = model;
     }
-    /* setStatus 受限枚举（design D4）：枚举外/缺省一律剥离该字段（不丢槽位）。 */
+    /* setStatus 形状校验（D4：非空字符串即可，枚举外/缺省剥离该字段而不丢槽位）；
+       槽位编辑器下拉只列当前列表，故「引用已删状态」的存量值在此**原样保留**（读取
+       路径不静默清空——与「（已删除）」占位项配套）。 */
     if (isValidSlotStatus(raw.setStatus)) slot.setStatus = raw.setStatus;
+    /* `citeName` = 引用提案目录开关（optional，**读取缺省 = 勾选**）：透传 boolean、
+       缺省**不物化**（缺字段不落盘，消费点以 `slot.citeName !== false` 判定缺省勾选
+       ——旧槽位自动获得新行为，且文档不被归一化写入污染）。 */
+    if (typeof raw.citeName === "boolean") slot.citeName = raw.citeName;
   } else {
     const model = normalizeSlotModel(raw.model);
     if (model) slot.model = model;
