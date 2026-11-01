@@ -152,7 +152,7 @@ windowStub.__ModuleLoader__ = {
         react,
         "react/jsx-runtime": jsxRuntime,
         "react-dom": { createPortal: (children) => children, flushSync: (fn) => fn?.() },
-        "@deepseek-ai/dsh-client-ui-primitives": { IconSettingsOutline16: () => null },
+        "@deepseek-ai/dsh-client-ui-primitives": { IconSettingsOutlineMedium: () => null },
         "@deepseek-ai/dsh-client-store": {
           defineStore: (decl) => {
             let state = null;

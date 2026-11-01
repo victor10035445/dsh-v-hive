@@ -87,9 +87,12 @@ const modules = {
       };
     }
   },
-  /* 官方 primitives（页头设置图标 IconSettingsOutline16，hive-quick-commands） */
+  /* 官方 primitives（页头设置图标 IconSettingsOutlineMedium，hive-quick-commands）——
+     DSH 0.2.1-rc.5 起 Settings 图标族由 IconSettingsOutline14/16/18 重命名为
+     Medium/Regular。真实宿主里该名字是否存在由 host-export-contract-smoke 核验，
+     本桩只负责工厂形态/注册面（职责正交）。 */
   "@deepseek-ai/dsh-client-ui-primitives": {
-    IconSettingsOutline16: reactStub("IconSettingsOutline16")
+    IconSettingsOutlineMedium: reactStub("IconSettingsOutlineMedium")
   }
 };
 

@@ -164,9 +164,9 @@ windowStub.__ModuleLoader__ = {
         "@deepseek-ai/dsh-client-store": {
           defineStore: (decl) => ({ __store: true, decl })
         },
-        /* 官方 primitives（页头设置图标 IconSettingsOutline16） */
+        /* 官方 primitives（页头设置图标 IconSettingsOutlineMedium，DSH 0.2.1-rc.5 起的名字） */
         "@deepseek-ai/dsh-client-ui-primitives": {
-          IconSettingsOutline16: () => null
+          IconSettingsOutlineMedium: () => null
         }
       };
       if (!(specifier in modules)) throw new Error("unexpected external require: " + specifier);

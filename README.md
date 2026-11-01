@@ -205,7 +205,17 @@ dsh plugin --profile web add "<tgz 的绝对路径>"
 
 装完**重启 `dsh web`** 生效。也可在 `~/.dsh/profiles/web/cordis.patch.yml` 手动加 `- insert: [{id: dsh-v-hive, name: dsh-v-hive}]`（`patchReload: live` 下保存即热重载）。
 
-> **最低 DSH 版本：0.1.2-rc.1**（客户端 store 依赖种子模块 `@deepseek-ai/dsh-client-store`）。
+> **最低 DSH 版本：0.2.1-rc.5**。该版把客户端 primitives 的 Settings 图标族由
+> `IconSettingsOutline14/16/18` 重命名为 `IconSettingsOutlineMedium/Regular`，本插件
+> 0.2.2 起对齐新基线（页头设置齿轮用 `IconSettingsOutlineMedium` + `size 16`，与官方
+> 设置入口同款同尺寸）；更早版本没有 `Medium`、新基线已删除 `16` 族，两侧互斥，属
+> 文档声明的**显式不支持组合**。
+>
+> `pnpm test` 含**宿主导出契约测试**（`test/host-export-contract-smoke.mjs`）：它读取本机
+> 已安装 dsh 的前端基线 bundle，核验插件用到的每个宿主命名导出真实存在。运行前置：
+> 本机已安装 dsh（`npm i -g @deepseek-ai/dsh`），或用 `DSH_INSTALL_ROOT` 指向安装根
+> （通常即 `npm root -g` 的输出）。定位不到基线时测试会直接失败并列出已尝试路径——
+> 不静默跳过（本插件生来服务于已安装的 harness，跳过等于防线失效）。
 
 ## 从源码构建
 
@@ -213,7 +223,7 @@ dsh plugin --profile web add "<tgz 的绝对路径>"
 pnpm install
 pnpm build   # src/client.jsx → lib/client.js；src/index.mjs → lib/index.js
 pnpm check   # 语法检查（含 lib/hive-voice.mjs）
-pnpm test    # 39 个冒烟测试（含 voice-grammar / voice-session / voice-host / voice-ui）
+pnpm test    # 全量冒烟测试（含宿主导出契约；需本机已安装 dsh 或设置 DSH_INSTALL_ROOT）
 ```
 
 改客户端源码后 `pnpm build` 即触发 client-hmr 免刷新重载；改宿主半区（`src/index.mjs`）需重启 dsh。

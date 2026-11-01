@@ -75,7 +75,22 @@ dsh plugin --profile web add "<absolute path to the tgz>"
 
 **Restart `dsh web`** after installing. Alternatively add `- insert: [{id: dsh-v-hive, name: dsh-v-hive}]` to `~/.dsh/profiles/web/cordis.patch.yml` manually (with `patchReload: live`, saving hot-reloads).
 
-> **Minimum DSH version: 0.1.2-rc.1** (the client store depends on the seed module `@deepseek-ai/dsh-client-store`).
+> **Minimum DSH version: 0.2.1-rc.5**. That release renamed the client primitives'
+> Settings icon family from `IconSettingsOutline14/16/18` to
+> `IconSettingsOutlineMedium/Regular`; dsh-v-hive 0.2.2+ aligns with the new baseline
+> (the header settings gear uses `IconSettingsOutlineMedium` with `size 16`, the same
+> component and size as the official settings entry). Earlier versions lack `Medium`
+> while the new baseline removed the `16` family — the two are mutually exclusive, so
+> older harnesses are an explicitly unsupported combination.
+>
+> `pnpm test` includes a **host-export contract test**
+> (`test/host-export-contract-smoke.mjs`): it reads the frontend baseline bundle of the
+> locally installed dsh and verifies that every host named export used by the plugin
+> really exists. Prerequisite: dsh installed on this machine
+> (`npm i -g @deepseek-ai/dsh`), or `DSH_INSTALL_ROOT` pointing at the install root
+> (usually the output of `npm root -g`). When no baseline can be located the test fails
+> and lists every attempted path — it never skips silently (this plugin exists to serve
+> an installed harness, so skipping would defeat the gate).
 
 ## Build from source
 
@@ -83,7 +98,7 @@ dsh plugin --profile web add "<absolute path to the tgz>"
 pnpm install
 pnpm build   # src/client.jsx → lib/client.js; src/index.mjs → lib/index.js
 pnpm check   # syntax check
-pnpm test    # 35 smoke tests
+pnpm test    # all smoke tests (incl. host-export contract; needs dsh installed or DSH_INSTALL_ROOT)
 ```
 
 After changing client sources, `pnpm build` triggers client-hmr hot reload without refresh; host-half changes (`src/index.mjs`) require restarting dsh.

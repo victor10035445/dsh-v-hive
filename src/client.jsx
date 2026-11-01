@@ -21,7 +21,7 @@
  *  - 全部官方动词经注入服务使用，不修改任何官方包。
  */
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
-import { IconSettingsOutline16 } from "@deepseek-ai/dsh-client-ui-primitives";
+import { IconSettingsOutlineMedium } from "@deepseek-ai/dsh-client-ui-primitives";
 import { HiveScene } from "./hive/scene.mjs";
 import { deriveWorld, sessionsBriefOf } from "./bee-model.mjs";
 import { sessionsBriefStore } from "./brief.mjs";
@@ -3161,10 +3161,12 @@ function HivePage(props) {
               aria-haspopup="dialog"
               onClick={() => setSettingsOpen(true)}
             >
-              {/* 官方设置图标（IconSettingsOutline16, size 16）——与侧栏设置触发按钮
-                  wide 形态同一组件同一尺寸（窄栏 rail 为 IconSettingsOutline14/18）；
-                  fill: currentColor 跟随 jyv-toolBtn 文字色 */}
-              <IconSettingsOutline16 size={16} />
+              {/* 官方设置图标（IconSettingsOutlineMedium, size 16）——DSH 0.2.1-rc.5
+                  起 primitives 的 Settings 图标族由 IconSettingsOutline14/16/18 重命名为
+                  Medium/Regular，Medium 即内置 settings-account / settings-general 设置入口
+                  的同款组件与尺寸；fill: currentColor 跟随 jyv-toolBtn 文字色。
+                  名字漂移由 test/host-export-contract-smoke.mjs 在构建期拦截。 */}
+              <IconSettingsOutlineMedium size={16} />
             </button>
             <button
               type="button"

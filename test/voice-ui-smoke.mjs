@@ -130,7 +130,7 @@ windowStub.__ModuleLoader__ = {
             };
           }
         },
-        "@deepseek-ai/dsh-client-ui-primitives": { IconSettingsOutline16: () => null }
+        "@deepseek-ai/dsh-client-ui-primitives": { IconSettingsOutlineMedium: () => null }
       };
       if (!(specifier in modules)) throw new Error("unexpected external require: " + specifier);
       return modules[specifier];
