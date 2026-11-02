@@ -83,14 +83,18 @@ dsh plugin --profile web add "<absolute path to the tgz>"
 > while the new baseline removed the `16` family — the two are mutually exclusive, so
 > older harnesses are an explicitly unsupported combination.
 >
-> `pnpm test` includes a **host-export contract test**
-> (`test/host-export-contract-smoke.mjs`): it reads the frontend baseline bundle of the
-> locally installed dsh and verifies that every host named export used by the plugin
-> really exists. Prerequisite: dsh installed on this machine
+> `pnpm test` includes a **host contract test**
+> (`test/host-export-contract-smoke.mjs`) whose coverage is **seed-module named exports +
+> host service verb surface and snapshot shape**: it reads the frontend baseline bundle
+> and the service type declarations of the locally installed dsh, verifying that every
+> host named export used by the plugin really exists and that the `ctx.sessions` /
+> `ctx.uiWorkspace` verb surface plus the `SessionListState` shape still match the
+> plugin's expectations (since rc.5 navigation belongs to `uiWorkspace.openSession`, and
+> the snapshot no longer carries `current`). Prerequisite: dsh installed on this machine
 > (`npm i -g @deepseek-ai/dsh`), or `DSH_INSTALL_ROOT` pointing at the install root
-> (usually the output of `npm root -g`). When no baseline can be located the test fails
-> and lists every attempted path — it never skips silently (this plugin exists to serve
-> an installed harness, so skipping would defeat the gate).
+> (usually the output of `npm root -g`). When no baseline/declaration can be located the
+> test fails and lists every attempted path — it never skips silently (this plugin exists
+> to serve an installed harness, so skipping would defeat the gate).
 
 ## Build from source
 

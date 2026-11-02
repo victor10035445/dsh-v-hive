@@ -211,11 +211,14 @@ dsh plugin --profile web add "<tgz 的绝对路径>"
 > 设置入口同款同尺寸）；更早版本没有 `Medium`、新基线已删除 `16` 族，两侧互斥，属
 > 文档声明的**显式不支持组合**。
 >
-> `pnpm test` 含**宿主导出契约测试**（`test/host-export-contract-smoke.mjs`）：它读取本机
-> 已安装 dsh 的前端基线 bundle，核验插件用到的每个宿主命名导出真实存在。运行前置：
+> `pnpm test` 含**宿主契约测试**（`test/host-export-contract-smoke.mjs`），闸门覆盖面 =
+> **种子模块命名导出 + 宿主服务动词面与快照形状**：它读取本机已安装 dsh 的前端基线
+> bundle 与服务类型声明，核验插件用到的每个宿主命名导出真实存在、`ctx.sessions` /
+> `ctx.uiWorkspace` 的动词面与 `SessionListState` 形状仍与插件口径一致（rc.5 起导航归
+> `uiWorkspace.openSession`、快照不再有 `current` 字段）。运行前置：
 > 本机已安装 dsh（`npm i -g @deepseek-ai/dsh`），或用 `DSH_INSTALL_ROOT` 指向安装根
-> （通常即 `npm root -g` 的输出）。定位不到基线时测试会直接失败并列出已尝试路径——
-> 不静默跳过（本插件生来服务于已安装的 harness，跳过等于防线失效）。
+> （通常即 `npm root -g` 的输出）。定位不到基线/类型声明时测试会直接失败并列出已尝试
+> 路径——不静默跳过（本插件生来服务于已安装的 harness，跳过等于防线失效）。
 
 ## 从源码构建
 
@@ -223,7 +226,7 @@ dsh plugin --profile web add "<tgz 的绝对路径>"
 pnpm install
 pnpm build   # src/client.jsx → lib/client.js；src/index.mjs → lib/index.js
 pnpm check   # 语法检查（含 lib/hive-voice.mjs）
-pnpm test    # 全量冒烟测试（含宿主导出契约；需本机已安装 dsh 或设置 DSH_INSTALL_ROOT）
+pnpm test    # 全量冒烟测试（含宿主契约；需本机已安装 dsh 或设置 DSH_INSTALL_ROOT）
 ```
 
 改客户端源码后 `pnpm build` 即触发 client-hmr 免刷新重载；改宿主半区（`src/index.mjs`）需重启 dsh。

@@ -73,6 +73,91 @@ function sanitizeReportRows(value) {
 const ctxRef = { current: null };
 
 /* ------------------------------------------------------------------ *
+ * 当前会话读源（fix-rc5-session-navigation-migration D2）
+ *
+ * rc.5 删除了 `SessionListState.current`（`list` 快照只剩 ids/byId/phase/
+ * projectionsBySession），「当前会话」读侧迁入宿主 uiSession 服务的**主视图**绑定源：
+ * `adapter.current` 是 ObservableSnapshot（`getSnapshot().key` 即 sessionId；present
+ * 形态 `key: <sessionId>`、absent 形态 `key: void 0`——spike.md S1）。它随主视图换绑
+ * 收敛（`publishMain` 按 `retainedBy.mainView > 0` 解析），不是「选中动作的瞬时投影」。
+ *
+ * 单点出口 `currentSessionIdOf(ctx)`：主源可用即取主源；否则回落 localMirror
+ * （本插件自己**成功发起**的最近一次 openSession 目标；模块级、SHALL NOT 持久化、
+ * 开页初值 null）。降级路径的已知边界：官方侧栏发起的切换期间描边/镜头/概要条会
+ * 短暂失真（design Risks；上游可观测面见 Open Questions）。
+ * ------------------------------------------------------------------ */
+
+/** 宿主 uiSession 主视图绑定源（可选注入回调写入；缺席 = null → 走降级镜像）。 */
+const uiSessionCurrent = { source: null };
+/** 降级镜像：本插件最近一次成功 openSession 的目标 sessionId（模块级、不持久化）。 */
+let currentSessionMirror = null;
+
+/**
+ * 主源解析兜底面：服务已在册时 `ctx.get("uiSession")` 直接命中（可选注入回调尚未执行
+ * 或执行失败的部署也能取值）；服务未提供 → undefined（不抛、不阻断）。正常路径下
+ * `uiSessionCurrent.source` 命中即短路，热路径不多付这次查找。
+ */
+function uiSessionSourceOf(ctx) {
+  try {
+    const service = typeof ctx?.get === "function" ? ctx.get("uiSession") : ctx?.uiSession;
+    const source = service?.adapter?.current;
+    return source && typeof source.getSnapshot === "function" ? source : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 单点出口：当前会话 sessionId（无会话 = null）。全部消费点经此取值，SHALL NOT 直读
+ * 宿主快照的已移除字段。形状防御：快照 `.key` 不是非空字符串（absent / 形状漂移）即回落
+ * 镜像——任何异常不外抛到事件链。
+ * @param {any} ctx 插件客户端上下文（兜底取值面）
+ * @returns {string | null}
+ */
+function currentSessionIdOf(ctx) {
+  const source = uiSessionCurrent.source ?? uiSessionSourceOf(ctx);
+  if (source) {
+    try {
+      const key = source.getSnapshot?.()?.key;
+      if (typeof key === "string" && key) return key;
+    } catch {
+      /* 宿主异常/形状不符 → 降级镜像 */
+    }
+  }
+  return currentSessionMirror;
+}
+
+/**
+ * 可选消费宿主 uiSession（回调形态，design D2）：`inject` **数组**是硬依赖声明
+ * （缺服务 = 整插件拒载，SHALL NOT 把 uiSession 写进去）；`ctx.inject([...], cb)` 是
+ * 可选通道——服务不在册则回调不执行，其余功能照常（plugin-imports.mjs 同款纪律）。
+ * @param {any} ctx 插件客户端上下文
+ * @param {() => void} onCurrentChanged 主源换绑沿（哨兵）
+ * @returns {{ dispose?: () => void } | null} 子 fiber（调用方负责随控制器回收）
+ */
+function attachUiSession(ctx, onCurrentChanged) {
+  try {
+    return ctx.inject(["uiSession"], (sctx) => {
+      const source = sctx?.uiSession?.adapter?.current ?? null;
+      if (!source || typeof source.getSnapshot !== "function") return; // 形状不符 → 继续降级
+      uiSessionCurrent.source = source;
+      const dispose =
+        typeof source.subscribe === "function" ? source.subscribe(() => onCurrentChanged?.()) : null;
+      return () => {
+        try {
+          dispose?.();
+        } finally {
+          uiSessionCurrent.source = null;
+        }
+      };
+    });
+  } catch {
+    /* 注入面异常（旧宿主 / 形态不符）：静默降级，SHALL NOT 阻断加载 */
+    return null;
+  }
+}
+
+/* ------------------------------------------------------------------ *
  * 页面开合 store（模块级微观察者，insight 的 dashboardOpenStore 同款）：
  * 座位按钮（sidebar.footer.action）与整页（shell.overlay）共用同一份开合事实，
  * 两者不绑同一 slot store handle（one handle, one scope 纪律）。
@@ -381,10 +466,12 @@ function nextFrame() {
 /** 召唤草稿等待窗口（ms）：种子通道轮询宿主名单收录（binding 就绪）的上限，
  *  桥回退通道共用；本地流通常数百毫秒内收敛，3s 只兜底慢网/流重连。 */
 const BRIDGE_CONVERGE_TIMEOUT_MS = 3000;
-/** 等待期重发 selectBee 间隔（ms）：open 幂等；stage 对「名单未收录」的选择会
+/** 等待期重发 selectBee 间隔（ms）：切换动作幂等；stage 对「名单未收录」的选择会
  *  掩蔽 current（selection 仍在、stage 不动），名单补录后需要一次 current 触碰
- *  才会开演（宿主 open 语义：a failed one retries the next time current is
- *  touched）。 */
+ *  才会开演（宿主语义：a failed one retries the next time current is touched）。
+ *  S2（spike.md）实测：rc.5 的 `uiWorkspace.openSession` → `sessions.retain` 对名单外
+ *  id **同步抛** unknown session（fail-loud，与旧导航动词同形），故本重发循环与
+ *  selectSession 的 try/catch 语义原样保留；openSession 幂等（重复只加引用计数）。 */
 const BRIDGE_RESELECT_INTERVAL_MS = 400;
 /** 输入壳种子轮询间隔（ms）：等宿主名单收录新召唤会话（binding 就绪）。 */
 const SHELL_SEED_INTERVAL_MS = 120;
@@ -393,7 +480,7 @@ function selectSession(sessionId) {
   try {
     controllerRef.current?.actions.selectBee?.(sessionId);
   } catch {
-    /* 宿主 open 对名单外 id fail-loud：召唤返回与流补录之间的窗口会命中；
+    /* 宿主导航对名单外 id fail-loud：召唤返回与流补录之间的窗口会命中；
        等待循环随名单收敛自然消失，不在此上报。 */
   }
 }
@@ -403,8 +490,8 @@ function selectSession(sessionId) {
  * composer.dock 槽位（桥条目宿主）不渲染——桥对空白会话结构性缺席，等待永不
  * 收敛（实测：轮询 3s 超时告警）。改为轮询直址输入壳（宿主 conversation.input
  * 服务，官方 selectWorkspace 切会话搬草稿同款通道）：binding 就绪即写稿，随后
- * open 切当前会话，composer 挂载即带稿。周期性重发 open（幂等）让 selection 在
- * 名单补录后落位。超时返回 false，调用方回落桥通道/提示。
+ * 切当前会话（`uiWorkspace.openSession`），composer 挂载即带稿。周期性重发切换
+ * （幂等）让 selection 在名单补录后落位。超时返回 false，调用方回落桥通道/提示。
  */
 async function seedSummonDraft(sessionId, prompt, timeoutMs = BRIDGE_CONVERGE_TIMEOUT_MS) {
   const deadline = Date.now() + timeoutMs;
@@ -1444,9 +1531,9 @@ function createController(ctx, notify) {
 
   /* 门控镜像刷新（4.2 + context-hotbar-rework 6.1）：镜像 tick、current 变化、
      场景选中变化三路驱动——工蜂 id 与场景选中槽整值发布（道具栏三态门控、
-     覆盖面板呈现/收起共用）。 */
+     覆盖面板呈现/收起共用）。current 经单点出口取（rc.5 快照无 current 字段）。 */
   function refreshSelectedBee() {
-    const current = ctx.sessions?.list?.getSnapshot?.()?.current ?? null;
+    const current = currentSessionIdOf(ctx);
     selectedBeeStore.set(
       workerBeeIdOf(scene?.world ?? null, current, scene?.getSelection?.() ?? null, ctx.sessions?.list?.getSnapshot?.())
     );
@@ -1623,8 +1710,8 @@ function createController(ctx, notify) {
      付费）。回调入口复查 disposed（悬挂回调天然无害）；document.hidden 时保持置脏
      直接返回——隐藏期 rAF 本就不触发，恢复可见后该帧回调以最新镜像快照重建一次
      （与 scene.loop 暂停语义一致，SHALL NOT 积压逐事件重放）。例外（保持直连，
-     不经本调度）：镜头跟随哨兵订阅（current 边沿触发 followBee/scene.setSelected，
-     合帧会丢边沿）；轻量镜像同步 syncMirrors/pushBeeOverlay/syncBeeEngine（整值
+     不经本调度）：当前会话哨兵（`applyCurrentSession`；主源换绑 / 镜像写入的 current
+     变化沿，合帧会丢边沿）；轻量镜像同步 syncMirrors/pushBeeOverlay/syncBeeEngine（整值
      比较防抖，非重建路径）。 ── */
   let rebuildScheduled = false;
   let rebuildFrame = 0;
@@ -1688,16 +1775,37 @@ function createController(ctx, notify) {
        世界版本号 bump（覆盖面板实时跟随，7.2） */
     refreshSelectedBee();
     /* 会话概要条镜像（session-brief-bar 1.4/D4）：标题 + 末回合预览；内容不变不 bump
-       （brief.mjs store 整值比较，镜像 tick 高频下概要条不入 React 重渲染热路径）。 */
-    sessionsBriefStore.set(sessionsBriefOf(sessions.byId[sessions.current]));
+       （brief.mjs store 整值比较，镜像 tick 高频下概要条不入 React 重渲染热路径）。
+       current 经单点出口取（rc.5 快照无 current 字段，design D2）。 */
+    const currentSessionId = currentSessionIdOf(ctx);
+    sessionsBriefStore.set(sessionsBriefOf(currentSessionId ? sessions.byId[currentSessionId] : undefined));
     worldVersionStore.bump();
   }
 
   /* ── 官方动词（全部经注入服务，零新协议） ── */
 
+  /**
+   * 切换动作单点（rc.5，design D1）：`ctx.uiWorkspace.openSession` 是旧两个导航动词的
+   * 并集（`SessionTarget = SessionId | SubagentAddress`）。成功后写降级镜像并驱动哨兵——
+   * 主源可用时 uiSession 已在同一次同步调用栈内换绑（spike.md S1-3），此处重入被
+   * lastFollowed 去重；主源缺席时这里是**唯一**的变化沿。名单外 id 由宿主 fail-loud
+   * 上抛（`sessions.retain: unknown session`，spike.md S2），召唤链的等待循环自行兜住。
+   * @param {string | { childSessionId?: string }} target SessionId 或子代理地址
+   * @returns {string | null} 目标 sessionId（降级镜像值）
+   */
+  function openSessionTarget(target) {
+    ctx.uiWorkspace.openSession(target);
+    const sessionId = typeof target === "string" ? target : target?.childSessionId ?? null;
+    if (typeof sessionId === "string" && sessionId) {
+      currentSessionMirror = sessionId;
+      applyCurrentSession();
+    }
+    return sessionId;
+  }
+
   const actions = {
     selectBee(sessionId) {
-      ctx.sessions.open(sessionId);
+      openSessionTarget(sessionId);
     },
     /** 会话名单强制补录（召唤链路加速）：宿主流帧未达时兜底拉一次基线。 */
     refreshSessions() {
@@ -1724,10 +1832,10 @@ function createController(ctx, notify) {
         return false; // binding 未就绪 → 轮询重试
       }
     },
-    /** 蜂卡「打开会话」→ 会话浮窗（3.5）：先 selectBee 同步 current，再开浮窗；
+    /** 蜂卡「打开会话」→ 会话浮窗（3.5）：先切当前会话，再开浮窗；
         非工蜂（无人机）保持既有打开行为。 */
     openBeeSession(sessionId) {
-      ctx.sessions.open(sessionId);
+      openSessionTarget(sessionId);
       if (actions.isWorkerBee(sessionId)) storeBridge?.openFloat?.();
     },
     isWorkerBee(sessionId) {
@@ -1782,14 +1890,15 @@ function createController(ctx, notify) {
     async fetchModelCatalog(sessionId) {
       return fetchModels(sessionId);
     },
-    /** 任一活会话 id（模型目录代理需要活会话；S4）。 */
+    /** 任一活会话 id（模型目录代理需要活会话；S4）。兜底一行改经单点出口取当前会话
+        （rc.5 快照无 current 字段——原局部别名兜底在 rc.5 下恒 null，属静默失效点）。 */
     anyLiveSessionId() {
       const snapshot = ctx.sessions?.list?.getSnapshot?.();
       const byId = snapshot?.byId ?? {};
       for (const id of snapshot?.ids ?? []) {
         if (byId[id]?.origin !== "subagent" && !byId[id]?.blank) return id;
       }
-      return snapshot?.current ?? null;
+      return currentSessionIdOf(ctx);
     },
     /** 会话镜像快照（工蜂判定与蜂卡等待/通知的口径源）。 */
     sessionsSnapshot() {
@@ -1857,7 +1966,7 @@ function createController(ctx, notify) {
     /** 当前会话所属工作区（落盘「目标工作区默认蜂巢页当前选中工作区」的判据源）。 */
     currentWorkspaceId() {
       try {
-        const current = ctx.sessions?.list?.getSnapshot?.()?.current ?? null;
+        const current = currentSessionIdOf(ctx);
         if (!current) return null;
         const studio = (scene?.world?.studios ?? []).find((s) => (s.bees ?? []).some((b) => b.sessionId === current));
         return studio?.workspaceId ?? null;
@@ -1873,7 +1982,7 @@ function createController(ctx, notify) {
       const world = scene?.world;
       const assignments = beeTypesStore.getAssignments?.() ?? {};
       const types = beeTypesStore.beeTypes ?? [];
-      const current = ctx.sessions?.list?.getSnapshot?.()?.current ?? null;
+      const current = currentSessionIdOf(ctx);
       const list = [];
       const collect = (bee, workspaceId) => {
         if (!bee?.sessionId) return;
@@ -1898,11 +2007,12 @@ function createController(ctx, notify) {
       storeBridge?.closeFloat?.();
     },
     /* 无人机目录打开动作（函数体保留防外部引用漂移；hive-interaction-polish 4.2：
-       3D 场景触发已旁路——无人机不可选中，官方侧栏目录仍是子代理会话打开路径）。 */
+       3D 场景触发已旁路——无人机不可选中，官方侧栏目录仍是子代理会话打开路径）。
+       rc.5 起旧两个导航动词由 `uiWorkspace.openSession(target)` 承接，
+       `SessionTarget = SessionId | SubagentAddress` 原样覆盖两种身份（design D1）。 */
     selectDrone(sessionId) {
       const address = ctx.sessions.subagentAddress?.(sessionId);
-      if (address) ctx.sessions.openSubagent(address);
-      else ctx.sessions.open(sessionId);
+      openSessionTarget(address ?? sessionId);
     },
     newSession(workspaceId) {
       try {
@@ -2002,7 +2112,7 @@ function createController(ctx, notify) {
           onMarqueeCancel: () => marqueeRectStore.set(null)
         });
         if (layout) scene.setLayout(layout);
-        scene.setSelected(ctx.sessions?.list.getSnapshot()?.current);
+        scene.setSelected(currentSessionIdOf(ctx));
         scene.setSettings(storeBridge?.getSettings?.() ?? {});
         scene.onSelectionChange = refreshSelectedBee; // 非蜂选中/清选中 → 卡片门控刷新
         startCameraSync();
@@ -2018,7 +2128,7 @@ function createController(ctx, notify) {
          与订阅哨兵独立（不受 lastFollowed 约束，每次开页都定位），但同步哨兵防
          随后同值列表刷新重复触发。开关关闭时 SHALL NOT 定位（统一门禁）。 */
       {
-        const current = ctx.sessions?.list.getSnapshot()?.current ?? null;
+        const current = currentSessionIdOf(ctx);
         lastFollowed = current;
         if (storeBridge?.getSettings?.().followCurrent && current) scene.followBee(current);
       }
@@ -2041,20 +2151,40 @@ function createController(ctx, notify) {
   /* ── 镜像订阅（实时推送帧驱动；页面关闭也刷新，insight/explorer 同策略） ── */
   disposers.push(ctx.sessions?.list.subscribe(() => scheduleRebuild()));
   disposers.push(ctx.workspaces?.list.subscribe(() => scheduleRebuild()));
-  disposers.push(
-    ctx.sessions?.list.subscribe(() => {
-      const current = ctx.sessions.list.getSnapshot().current;
-      scene?.setSelected(current);
-      refreshSelectedBee();
-      /* 镜头跟随（1.4）：仅 current 变化沿触发——列表镜像的任意非 current 刷新
-         （状态/todo/标题）SHALL NOT 重触发飞行、SHALL NOT 把手动摇离的镜头拽回；
-         页关闭（scene.stop）期间不飞（followBee 内 running 门禁），由下次开页
-         定位兜底（1.5）。开关关闭时无任何相机运动。 */
-      if (current === lastFollowed) return;
-      lastFollowed = current;
-      if (storeBridge?.getSettings?.().followCurrent && current) scene?.followBee(current);
-    })
-  );
+
+  /* 当前会话哨兵（design D2）：**双路**变化沿——① 主源 `uiSession.adapter.current`
+     的 subscribe（官方侧栏切换 / 任意外部导航换绑）；② 本插件自身 openSession 成功
+     （经 openSessionTarget 写降级镜像后显式驱动，主源缺席时这是唯一沿）。
+     处理面 = 场景选中槽（scene.setSelected）+ 工蜂门控（refreshSelectedBee）+
+     **概要条定向刷新** + 镜头跟随变化沿。
+     概要条必须在此定向刷新：旧世界 current 变化必然伴随 list 事件、概要条在镜像 tick
+     内顺带更新；新世界侧栏切换可能**没有 list 事件**（uiSession 换绑只动绑定源），
+     不在此定向刷新则概要条断链。 */
+  function applyCurrentSession() {
+    const current = currentSessionIdOf(ctx);
+    scene?.setSelected(current);
+    refreshSelectedBee();
+    const sessions = ctx.sessions?.list?.getSnapshot?.() ?? null;
+    sessionsBriefStore.set(sessionsBriefOf(current ? sessions?.byId?.[current] : undefined));
+    /* 镜头跟随（1.4）：仅 current 变化沿触发——列表镜像的任意非 current 刷新
+       （状态/todo/标题）SHALL NOT 重触发飞行、SHALL NOT 把手动摇离的镜头拽回；
+       页关闭（scene.stop）期间不飞（followBee 内 running 门禁），由下次开页
+       定位兜底（1.5）。开关关闭时无任何相机运动。 */
+    if (current === lastFollowed) return;
+    lastFollowed = current;
+    if (storeBridge?.getSettings?.().followCurrent && current) scene?.followBee(current);
+  }
+
+  /* list 订阅保留：名单/状态变化会重算主源（retain 计数、归档清 current）与场景选中槽；
+     值不变时哨兵内部按 lastFollowed 去重、概要条按整值比较不 bump。 */
+  disposers.push(ctx.sessions?.list.subscribe(applyCurrentSession));
+
+  /* 可选注入宿主 uiSession（回调形态）：服务不在册 → 回调不执行 → 出口自动降级镜像；
+     disposer 入 disposers 统一回收（子 fiber 随控制器回收，清主源引用）。 */
+  const uiSessionFiber = attachUiSession(ctx, applyCurrentSession);
+  if (uiSessionFiber && typeof uiSessionFiber.dispose === "function") {
+    disposers.push(() => uiSessionFiber.dispose());
+  }
 
   /* ── SSE 布局广播 + focus 补拉（R5） ── */
   disposers.push(
@@ -5752,5 +5882,7 @@ export function apply(ctx) {
    只读镜像桥 + 草稿通道（召唤种子/桥回退）+ 道具栏/面板/模态组件引用，供
    bundle 级冒烟直测渲染输出与交互 props；运行时行为不受影响。
    `proposalsStore` 一并导出：提案面板冒烟的清单注入点（沙箱无 EventSource/SSE，
-   只能由 store 直接落 fixture——与 hotbars-ui-smoke 直测 store 同款纪律）。 */
-export { composerBridge, appendViaBridge, seedSummonDraft, HotbarBar, WorkerPanel, HiveSettingsModal, HotbarsModal, LayoutSettingsBody, ProposalSettingsBody, BeeSwarmModal, ProposalPanel, proposalsStore, VoiceDeskPanel, VoiceSettingsBody, createVoiceDesk, assembleDeliveryPrompt };
+   只能由 store 直接落 fixture——与 hotbars-ui-smoke 直测 store 同款纪律）。
+   `currentSessionIdOf` 导出：会话导航迁移的读源单点出口（session-navigation-smoke
+   直测主源命中 / absent / 降级镜像三态，不必伪造场景与 React 树）。 */
+export { composerBridge, appendViaBridge, seedSummonDraft, currentSessionIdOf, HotbarBar, WorkerPanel, HiveSettingsModal, HotbarsModal, LayoutSettingsBody, ProposalSettingsBody, BeeSwarmModal, ProposalPanel, proposalsStore, VoiceDeskPanel, VoiceSettingsBody, createVoiceDesk, assembleDeliveryPrompt };
