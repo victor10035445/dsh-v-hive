@@ -52,7 +52,7 @@ import { interpolateTemplate } from "./capabilities.mjs";
 /* 提案面板纯逻辑（add-proposal-panel 5.x；proposal-panel-config 3.x）：有效状态列表
    与名称回退链、状态位键构造、报告让位 reserve（原 status-cards.mjs 的 statusBarReserve
    换主迁入）、面板行数折算常量。 */
-import { PROPOSAL_ROW_PX, PROPOSAL_STATUSES, PROPOSAL_STATUS_IDS, buildProposalStatusName, effectiveProposalStatuses, isKnownProposalStatus, panelReserve, proposalStateKey, proposalStatusColor, sanitizeProposalStatusesDraft } from "./proposals.mjs";
+import { PROPOSAL_ROW_PX, PROPOSAL_STATUSES, PROPOSAL_STATUS_IDS, buildProposalStatusName, effectiveProposalStatuses, isKnownProposalStatus, panelReserve, proposalSlotOutcome, proposalStateKey, proposalStatusColor, sanitizeProposalStatusesDraft } from "./proposals.mjs";
 import { hiveStore, beeTypesStore, beeEngineStore, hotbarsStore, proposalsStore, sanitizeLayout, sanitizeProposalRows, LAYOUT_DEFAULTS, PANEL_LIMITS, BAR_LIMITS, REPORT_ROWS_LIMIT, PROPOSAL_ROWS_LIMIT, CHROME_SCHEMES } from "./store.mjs";
 import { CSS } from "./styles.mjs";
 import { APPEARANCE_DEFAULTS, APPEARANCE_REV } from "./hive/palette.mjs";
@@ -760,14 +760,18 @@ const zh = {
   "hive.hb.promptPlaceholder": "提示词（发给新蜂或当前会话）",
   "hive.hb.autoSend": "自动发送",
   "hive.hb.autoSendHint": "勾选后点击卡片直接发送；不勾选则填入输入框供审查回车",
+  /* 蜂栏「新开会话」（new-session-hotbar 4.x/D1/D3）：落点开关 + 模型双语义 hint */
+  "hive.hb.newSession": "新开会话",
+  "hive.hb.newSessionHint": "勾选后点击卡片在当前会话蜂所属工作区新建会话发起需求；不勾选则续接当前会话",
+  "hive.hb.beeModelHint": "直发：先切当前会话蜂模型；新开会话：为新蜂选型",
   "hive.hb.pureSummonHint": "提示词留空 = 纯召唤（只建蜂不发消息）",
   "hive.hb.summonOffHint": "召唤关闭：提示词不接受，卡片在道具栏为禁用态",
-  /* 提案栏节（add-proposal-panel 5.6/5.7） */
+  /* 提案栏节（add-proposal-panel 5.6/5.7；new-session-hotbar 4.3/D6：恒召唤，开关退役） */
   "hive.hb.tabProposal": "提案栏",
   "hive.hb.setStatus": "执行成功后置状态",
-  "hive.hb.proposalSummonHint": "勾选后点击卡片在提案所属工作区召唤新蜂；不勾选则发给当前会话蜂",
+  "hive.hb.proposalAlwaysSummonHint": "提案栏恒走召唤通道：点击在提案所属工作区召唤新蜂（不发给当前会话蜂）",
   "hive.hb.proposalSlotHint": "提示词模板中的 {change} 会在执行时替换为选中的提案名；写 {{change}} 得到字面 {change}（不被替换）",
-  "hive.hb.proposalAutoSendHint": "勾选后点击卡片直接发送；不勾选则填入输入框供审查回车（该路径不置状态）",
+  "hive.hb.proposalAutoSendHint": "勾选后点击卡片直接发送；不勾选则填入输入框供审查回车（状态置位不受影响）",
   "hive.hb.proposalPromptHint": "模板：{change} = 选中提案名；{{ 与 }} 会还原为单个花括号",
   "hive.hb.proposalPromptPlaceholder": "如：继续推进 {change}，先读 proposal.md",
   "hive.hb.proposalCiteName": "引用提案目录",
@@ -800,6 +804,7 @@ const zh = {
   "hive.bar.pureSummon": "纯召唤",
   "hive.bar.summonOff": "召唤已关闭",
   "hive.bar.floorHint": "选定目录建巢",
+  "hive.bar.beeNewSessionTitle": "新开会话：在当前会话蜂所属巢中召唤新蜂",
   "hive.bar.toastSummoned": "已召唤新蜂",
   "hive.bar.toastSummonFailed": "召唤失败",
   "hive.bar.toastMissingBee": "蜂种缺失，召唤被拒",
@@ -809,9 +814,9 @@ const zh = {
   "hive.bar.toastFloorSummonFailed": "建巢成功，但召唤失败（空巢已保留）",
   "hive.bar.toastSummonAppendFailed": "召唤成功，但提示词未能填入输入框（会话已打开，可手动粘贴）",
   "hive.bar.toastModelDegraded": "模型切换失败，已按会话当前模型发送",
-  /* 提案栏门控与 aria（add-proposal-panel 5.5/5.7；aria 经 "hive.bar.aria."+kind 拼键） */
+  /* 提案栏门控与 aria（add-proposal-panel 5.5/5.7；new-session-hotbar 3.2：门控收敛为
+     单一在途锁，title 恒为提示词——「当前会话蜂」相关文案随通道退役删除） */
   "hive.bar.aria.proposal": "提案栏道具栏",
-  "hive.bar.proposalNoBee": "当前会话不是可直发的工蜂——请先选中一只蜂，或在提案卡上勾选「召唤新蜂」",
   "hive.bar.defaults.beeContinue": "继续",
   "hive.bar.defaults.beeContinuePrompt": "继续",
   "hive.bar.defaults.beeArchive": "归档会话",
@@ -842,7 +847,6 @@ const zh = {
   "hive.proposal.toast.statusFailed": "状态写入失败：{err}",
   "hive.proposal.toast.missingVars": "模板占位符未插值：{names}（未发送）",
   "hive.proposal.toast.badTemplate": "模板语法非法（花括号不成对，未发送）",
-  "hive.proposal.toast.sendFailed": "提案指令发送失败",
   "hive.swarm.title": "蜂群编辑",
   "hive.swarm.close": "关闭蜂群编辑",
   "hive.swarm.tabTypes": "蜂种列表",
@@ -1225,14 +1229,18 @@ const en = {
   "hive.hb.promptPlaceholder": "Prompt (sent to the new bee or the current session)",
   "hive.hb.autoSend": "Auto send",
   "hive.hb.autoSendHint": "Checked = a click sends directly; unchecked = fills the composer for review",
+  /* 蜂栏「新开会话」（new-session-hotbar 4.x/D1/D3）：落点开关 + 模型双语义 hint */
+  "hive.hb.newSession": "New session",
+  "hive.hb.newSessionHint": "Checked = a click summons a new bee in the current session bee's workspace; unchecked = continue the current session",
+  "hive.hb.beeModelHint": "Direct send: switch the current bee's model first; new session: pick the new bee's model",
   "hive.hb.pureSummonHint": "Empty prompt = summon only (no message sent)",
   "hive.hb.summonOffHint": "Summon off: prompt not accepted; the card renders disabled in the hotbar",
-  /* 提案栏节（add-proposal-panel 5.6/5.7；proposal-panel-config 5.2 补齐英文） */
+  /* 提案栏节（add-proposal-panel 5.6/5.7；new-session-hotbar 4.3/D6：恒召唤，开关退役） */
   "hive.hb.tabProposal": "Proposal bar",
   "hive.hb.setStatus": "Status on success",
-  "hive.hb.proposalSummonHint": "Checked = clicking the card summons a new bee in the proposal's workspace; unchecked = send to the current session bee",
+  "hive.hb.proposalAlwaysSummonHint": "The proposal bar always summons: a click creates a new bee in the proposal's workspace (never sends to the current session bee)",
   "hive.hb.proposalSlotHint": "The {change} placeholder in the template is replaced with the selected proposal name at run time; write {{change}} for a literal {change}",
-  "hive.hb.proposalAutoSendHint": "Checked = a click sends directly; unchecked = fills the composer for review (that path does not set the status)",
+  "hive.hb.proposalAutoSendHint": "Checked = a click sends directly; unchecked = fills the composer for review (the status is set either way)",
   "hive.hb.proposalPromptHint": "Template: {change} = selected proposal name; {{ and }} collapse to a single brace",
   "hive.hb.proposalPromptPlaceholder": "e.g. Continue {change}, read proposal.md first",
   "hive.hb.proposalCiteName": "Cite the proposal directory",
@@ -1265,6 +1273,7 @@ const en = {
   "hive.bar.pureSummon": "Summon only",
   "hive.bar.summonOff": "Summon off",
   "hive.bar.floorHint": "Pick a directory to nest",
+  "hive.bar.beeNewSessionTitle": "New session: summon a new bee in the current bee's hive",
   "hive.bar.toastSummoned": "New bee summoned",
   "hive.bar.toastSummonFailed": "Summon failed",
   "hive.bar.toastMissingBee": "Bee type missing; summon refused",
@@ -1274,9 +1283,9 @@ const en = {
   "hive.bar.toastFloorSummonFailed": "Studio created, but summon failed (empty studio kept)",
   "hive.bar.toastSummonAppendFailed": "Bee summoned, but the prompt could not be filled into the composer (session opened; paste it manually)",
   "hive.bar.toastModelDegraded": "Model switch failed; sent with the session's current model",
-  /* 提案栏门控与 aria（add-proposal-panel 5.5/5.7；aria 经 "hive.bar.aria."+kind 拼键） */
-  "hive.bar.aria.proposal": "提案栏道具栏",
-  "hive.bar.proposalNoBee": "当前会话不是可直发的工蜂——请先选中一只蜂，或在提案卡上勾选「召唤新蜂」",
+  /* 提案栏门控与 aria（add-proposal-panel 5.5/5.7；new-session-hotbar 3.2：门控收敛为
+     单一在途锁，title 恒为提示词——「当前会话蜂」相关文案随通道退役删除） */
+  "hive.bar.aria.proposal": "Proposal hotbar",
   "hive.bar.defaults.beeContinue": "Continue",
   "hive.bar.defaults.beeContinuePrompt": "Continue",
   "hive.bar.defaults.beeArchive": "Archive session",
@@ -1307,7 +1316,6 @@ const en = {
   "hive.proposal.toast.statusFailed": "Failed to write status: {err}",
   "hive.proposal.toast.missingVars": "Template placeholders not interpolated: {names} (not sent)",
   "hive.proposal.toast.badTemplate": "Invalid template syntax (unbalanced braces, not sent)",
-  "hive.proposal.toast.sendFailed": "Failed to send the proposal command",
   "hive.swarm.title": "Bee swarm editor",
   "hive.swarm.close": "Close the bee swarm editor",
   "hive.swarm.tabTypes": "Bee types",
@@ -2956,15 +2964,86 @@ function HivePage(props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selection]);
 
-  /* 蜂栏双通道（6.3，继承旧快捷指令语义）：未勾 = 桥追加草稿 + 唤起浮窗（非
-     plain 禁用）；勾选 = POST /send followup 直发（静默：无 toast 无镜头）；
-     空 Prompt 前置拦截。 */
+  /* 召唤类共享单飞锁（new-session-hotbar 2.3/D5）：巢栏召唤卡与蜂栏
+     `newSession=是` 卡共用同一在途态（同一时刻至多一次召唤请求，防双击双蜂）；
+     蜂栏 `newSession=否` 卡不持锁（不建蜂）。提案栏维持既有 `proposalBusy`
+     （跨栏并发建蜂为既有行为，本 change 不收敛）。 */
+  const [summonBusy, setSummonBusy] = useState(false);
+
+  /**
+   * 审查路径收尾（D7 巢栏定稿；巢栏/蜂栏 newSession/提案栏同款）：主通道 = 直址输入
+   * 壳种子（blank 期 dock 桥结构性缺席）；种子失败回落桥通道短等待（非 blank 会话
+   * 仍可达）；成功 → 关页直达标准会话视图（不开浮窗：浮窗形态会把蜂巢页整体藏掉、
+   * 四周露出被压暗的官方三列，窗框纯冗余——用户定稿）；两路皆败 → 留在蜂巢页显式
+   * 提示（会话已切，退出蜂巢可手动粘贴）。
+   */
+  const finishSummonReview = async (sessionId, prompt) => {
+    ctl().actions.refreshSessions?.();
+    const appended = (await seedSummonDraft(sessionId, prompt))
+      || (await appendViaBridge(sessionId, prompt, 800));
+    if (appended) close(); // 关页直达：终点即“标准新会话 + 预填稿”，无浮窗
+    else notify("summonAppendFailed", "err");
+    return appended;
+  };
+
+  /**
+   * 召唤通道单点（D4/D7；巢栏召唤卡与蜂栏 newSession=是 卡共用）：POST /summon →
+   * 空白提示词 = 纯召唤（仅巢栏合法，只建不发）/ autoSend 真 = 宿主投首条、留蜂巢页
+   * （新蜂出场动画经 SSE 收敛）/ 假 = 审查收尾。失败已按字段级原因 notify，返回
+   * { ok:false }（不抛错）。
+   */
+  const summonCard = async ({ workspaceId, beeTypeId, model, prompt, autoSend }) => {
+    const result = await ctl().actions.summon({ workspaceId, beeTypeId, prompt, model, autoSend });
+    if (!result?.ok) {
+      notify(result?.field === "beeTypeId" ? "summonMissingBee" : "summonFailed", "err");
+      return { ok: false };
+    }
+    if (!String(prompt ?? "").trim()) {
+      notify("summoned", "ok"); // 纯召唤：仅建不发，蜂出场动画 + SSE 自然收敛
+      return { ok: true, sessionId: result.sessionId };
+    }
+    if (autoSend !== true) await finishSummonReview(result.sessionId, prompt);
+    return { ok: true, sessionId: result.sessionId };
+  };
+
+  /* 蜂栏三通道（new-session-hotbar 2.1/2.2/2.5/D1/D10）：未勾 `newSession` = 既有
+     双通道逐字不变（未勾自动发送 = 桥追加草稿 + 唤起浮窗（非 plain 禁用）；勾选 =
+     POST /send followup 直发（静默：无 toast 无镜头），并携带卡片模型）；勾选
+     `newSession` = 召唤通道（当前会话蜂所属工作区新建会话，两 autoSend 分支与巢栏
+     同款）。空 Prompt 前置拦截保持。 */
   const handleBeeSlot = async (slot) => {
     const prompt = String(slot.prompt ?? "");
     if (!prompt.trim() || !selectedBee) return;
+    if (slot.newSession === true) {
+      /* 落点解析（D2/D4）：`currentWorkspaceId()` = 当前会话 → 所属巢 → workspaceId；
+         蜂栏仅在巢内蜂（工蜂口径）时渲染，解析失败属竞态兜底——按 /summon 404 同款
+         提示，不建任何东西。 */
+      const workspaceId = ctl().actions.currentWorkspaceId?.() ?? null;
+      if (!workspaceId) {
+        notify("summonFailed", "err");
+        return;
+      }
+      if (summonBusy) return; // 召唤类共享单飞锁（双击防抖；卡片视觉已禁用）
+      setSummonBusy(true);
+      try {
+        await summonCard({
+          workspaceId,
+          beeTypeId: slot.beeTypeId || undefined,
+          model: slot.model,
+          prompt,
+          autoSend: slot.autoSend === true
+        });
+      } finally {
+        setSummonBusy(false);
+      }
+      return;
+    }
     if (slot.autoSend === true) {
-      const result = await sendCommand(selectedBee, prompt);
+      /* 直发通道（D10 存量缺口收口）：携带卡片模型——先切当前会话蜂模型，切换失败
+         降级不阻断发送（`modelDegraded` 随既有响应形状 toast，与提案栏直发同口径）。 */
+      const result = await sendCommand(selectedBee, prompt, slot.model);
       if (!result.ok) console.warn("[dsh-v-hive] hotbar send failed:", result.error);
+      else if (result.degraded === true) notify("modelDegraded", "err");
       return;
     }
     const appended = await appendViaBridge(selectedBee, prompt);
@@ -2972,43 +3051,18 @@ function HivePage(props) {
     openFloat();
   };
 
-  /* 巢栏召唤卡（6.4/D4/D5）：in-flight 锁至请求返回（防双击双蜂，视觉禁用）。
-     autoSend 假 = 切会话 + 填稿 + 关页直达会话视图（不开浮窗）；真且 prompt
-     非空 = 宿主直发（页面保持打开）；空白 prompt = 纯召唤（notify 兜底）。 */
-  const [summonBusy, setSummonBusy] = useState(false);
+  /* 巢栏召唤卡（6.4/D4/D5）：召唤类共享在途锁 + 召唤通道单点收尾；空白 prompt =
+     纯召唤（notify 兜底）。 */
   const handleHiveSummon = async (slot) => {
     if (summonBusy || !selection || selection.kind !== "studio") return;
     setSummonBusy(true);
     try {
-      const prompt = String(slot.prompt ?? "");
-      const result = await ctl().actions.summon({
+      await summonCard({
         workspaceId: selection.id,
         beeTypeId: slot.beeTypeId || undefined,
-        prompt,
+        prompt: String(slot.prompt ?? ""),
         autoSend: slot.autoSend === true
       });
-      if (!result.ok) {
-        notify(result.field === "beeTypeId" ? "summonMissingBee" : "summonFailed", "err");
-        return;
-      }
-      if (!prompt.trim()) {
-        notify("summoned", "ok"); // 纯召唤：仅建不发，蜂出场动画 + SSE 自然收敛
-        return;
-      }
-      if (slot.autoSend !== true) {
-        /* 审查路径：主通道 = 直址输入壳种子（blank 期 dock 桥结构性缺席）；
-           种子成功 → open 切当前会话 → 关页直达标准会话视图（composer 挂载即
-           带稿，回车即发）。不开浮窗：浮窗形态会把蜂巢页整体藏掉、四周露出
-           被压暗的官方三列（侧栏/explorer 全部可见），视觉上与直接开会话无
-           异，窗框纯冗余（用户定稿）。种子失败回落桥通道短等待（非 blank
-           会话仍可达）；两路皆败 → 留在蜂巢页显式提示（会话已切，退出蜂巢
-           可手动粘贴）。 */
-        ctl().actions.refreshSessions?.();
-        const appended = (await seedSummonDraft(result.sessionId, prompt))
-          || (await appendViaBridge(result.sessionId, prompt, 800));
-        if (appended) close(); // 关页直达：终点即“标准新会话 + 预填稿”，无浮窗
-        else notify("summonAppendFailed", "err");
-      }
     } finally {
       setSummonBusy(false);
     }
@@ -3078,15 +3132,18 @@ function HivePage(props) {
     }
   };
 
-  /* 提案指令卡（add-proposal-panel 6.1/D6/D7；proposal-panel-config 3.2/D4/D6）：
-     `{change}` 插值 fail-safe → citeName 前置 `@<提案名> ` → 两条宿主通道分流 →
-     「宿主已接受」且 `setStatus` **在当前列表内**才置位。
+  /* 提案指令卡（add-proposal-panel 6.1/D6/D7；proposal-panel-config 3.2/D4/D6；
+     new-session-hotbar 3.1/3.3/D6）：`{change}` 插值 fail-safe → citeName 前置
+     `@<提案名> ` → **恒走召唤通道**（提案所属工作区；`summon` 开关 / 直发 / 填稿
+     通道已退役）→ 「召唤请求被接受」即置位（审查路径会话已建即成立，投递结果不
+     回溯改判）。
      在途锁（proposalBusy）：双击 SHALL NOT 产生两个新蜂。 */
   const [proposalBusy, setProposalBusy] = useState(false);
   const fillTemplate = (key, vars) =>
     String(t(key)).replace(/\{(\w+)\}/g, (whole, name) => (name in vars ? String(vars[name]) : whole));
 
-  /** 执行成功后置位（仅「宿主已接受」通道调用；填稿通道 SHALL NOT 调用）。
+  /** 置位（判据 = 「召唤请求被宿主接受」——两 autoSend 分支同一时刻，见
+   *  `proposalSlotOutcome`；投递/填稿结果不回溯改判）。
    *  **失效引用静默跳过（D4）**：`setStatus` 不在当前状态列表 → 不置位、不报错、不 toast
    *  （即「默认不改变状态」——用户删掉状态后旧指令卡自然退化为不改状态，而不是弹一条
    *  无从处置的错误）。列表取动作面有效列表（与本页签镜像同源）。 */
@@ -3121,61 +3178,30 @@ function HivePage(props) {
     }
     /* citeName 前置（D6）：插值**之后**把提案名以 `@<提案名> ` 放到提示词最前
        （前置文本无花括号，不参与插值）；`!== false` = 读取缺省勾选（旧槽位自动获得
-       新行为）。直发/召唤/填稿三通道同一体——故在通道分流前一次成型。 */
+       新行为）。恒召唤通道一条路径——故在调用前一次成型。 */
     const cited = slot.citeName !== false && pick.name ? "@" + pick.name + " " + interpolated.text : interpolated.text;
     const prompt = cited;
     const status = typeof slot.setStatus === "string" ? slot.setStatus : "";
     setProposalBusy(true);
     try {
-      if (slot.summon === true) {
-        /* 新召唤通道：cwd = 提案所属工作区（用户决策：新蜂落该巢）。 */
-        const result = await ctl().actions.summon({
-          workspaceId: pick.workspaceId,
-          beeTypeId: slot.beeTypeId || undefined,
-          prompt,
-          model: slot.model,
-          autoSend: slot.autoSend === true
-        });
-        if (!result?.ok) {
-          notify(result?.field === "beeTypeId" ? "summonMissingBee" : "summonFailed", "err");
-          return;
-        }
-        if (!prompt.trim()) {
-          notify("summoned", "ok");
-          await applyProposalStatus(status, pick);
-          return;
-        }
-        if (slot.autoSend !== true) {
-          /* 审查路径：种子/桥填稿 + 关页直达；仍以**召唤请求被接受**为置位判据
-             （会话已建，执行事实成立）。 */
-          ctl().actions.refreshSessions?.();
-          const appended = (await seedSummonDraft(result.sessionId, prompt))
-            || (await appendViaBridge(result.sessionId, prompt, 800));
-          if (appended) close();
-          else notify("summonAppendFailed", "err");
-          await applyProposalStatus(status, pick);
-          return;
-        }
-        await applyProposalStatus(status, pick);
+      /* 恒走召唤通道（D6）：cwd = 提案所属工作区（提案选中语义聚焦工作区，无
+         「当前会话蜂」概念——用户决策③）。 */
+      const result = await ctl().actions.summon({
+        workspaceId: pick.workspaceId,
+        beeTypeId: slot.beeTypeId || undefined,
+        model: slot.model,
+        prompt,
+        autoSend: slot.autoSend === true
+      });
+      /* 置位判据 = 「召唤请求被宿主接受」（`proposalSlotOutcome` 纯函数单点，D6）：
+         与投递/填稿结果无关——审查路径会话已建即执行事实成立。 */
+      const outcome = proposalSlotOutcome(result, slot);
+      if (!outcome.accepted) {
+        notify(result?.field === "beeTypeId" ? "summonMissingBee" : "summonFailed", "err");
         return;
       }
-      /* 直发通道（继承蜂栏双通道语义）。 */
-      if (slot.autoSend === true) {
-        if (!selectedBee) return; // 门控已挡（卡片禁用），此处双保险
-        const result = await sendCommand(selectedBee, prompt, slot.model);
-        if (!result.ok) {
-          notify("proposalSendFailed", "err");
-          return;
-        }
-        if (result.degraded === true) notify("modelDegraded", "err");
-        await applyProposalStatus(status, pick);
-        return;
-      }
-      /* 填稿通道（未勾自动发送）：无宿主接受事实 → **SHALL NOT 置位**。 */
-      if (!selectedBee) return;
-      const appended = await appendViaBridge(selectedBee, prompt);
-      if (!appended) return;
-      openFloat();
+      await applyProposalStatus(status, pick);
+      if (outcome.review) await finishSummonReview(result.sessionId, prompt);
     } finally {
       setProposalBusy(false);
     }
@@ -3382,7 +3408,6 @@ function HivePage(props) {
           slots={hotbarKind ? effectiveHotbarSlots(hotbarKind, hotbars[hotbarKind], t) : []}
           layout={layout}
           bridgeReady={composerBridge.inputActions !== null && composerBridge.phase === "plain"}
-          workerReady={Boolean(selectedBee)}
           disabled={settingsOpen || swarmOpen || hotbarsOpen}
           summonBusy={summonBusy}
           floorBusy={floorBusy}
@@ -3599,9 +3624,9 @@ function toastText(t, text) {
     summonAppendFailed: t("hive.bar.toastSummonAppendFailed"),
     /* 蜂栏卡直发切模型失败（add-hotbar-llm-model-and-import D4：降级不阻断发送） */
     modelDegraded: t("hive.bar.toastModelDegraded"),
-    /* 提案指令链路（add-proposal-panel 6.1；未命中即原样透出） */
-    proposalStatusSet: t("hive.proposal.toast.statusSet"),
-    proposalSendFailed: t("hive.proposal.toast.sendFailed")
+    /* 提案指令链路（add-proposal-panel 6.1；new-session-hotbar 3.1：直发通道退役，
+       提案执行恒走召唤通道，发送失败文案随之删除） */
+    proposalStatusSet: t("hive.proposal.toast.statusSet")
   };
   return map[text] ?? text;
 }
@@ -4570,12 +4595,13 @@ function FpsMeter() {
  *  - slots 语义 = 有效槽位（hotbar-default-actions 3.1）：外壳经
  *    effectiveHotbarSlots 派生——空栏注入整组内置默认卡（builtin 标记驱动
  *    「内置」角标，收回提示挂角标自身 title，卡体 title 保持动作语义）；
- *  - 点击语义：蜂栏 = 双通道（未勾追加+浮窗 / 勾选直发）+ 动作默认卡
- *    （归档/打开，action 判别，外壳分派）；巢栏 = 召唤；地板栏 = 建巢
- *    （经官方选择器）；默认卡与用户卡同 handler 同门控。
+ *  - 点击语义：蜂栏 = 三通道（`newSession=是` = 召唤新会话；否 × 未勾自动发送 =
+ *    追加+浮窗；否 × 勾选 = 直发）+ 动作默认卡（归档/打开，action 判别，外壳分派）；
+ *    巢栏 = 召唤；地板栏 = 建巢（经官方选择器）；提案栏 = 恒召唤；默认卡与用户卡
+ *    同 handler 同门控。
  * ------------------------------------------------------------------ */
 
-function HotbarBar({ t, kind, slots, layout, bridgeReady, workerReady, disabled, summonBusy, floorBusy, proposalBusy, onSlot }) {
+function HotbarBar({ t, kind, slots, layout, bridgeReady, disabled, summonBusy, floorBusy, proposalBusy, onSlot }) {
   if (!kind) return null;
   const cols = Math.max(1, layout.barM);
   const rows = Math.max(1, layout.barN);
@@ -4609,6 +4635,12 @@ function HotbarBar({ t, kind, slots, layout, bridgeReady, workerReady, disabled,
             title = slot.action === "archive"
               ? t("hive.bar.defaults.beeArchiveTitle")
               : t("hive.bar.defaults.beeOpenTitle");
+          } else if (slot.newSession === true) {
+            /* 新开会话卡（new-session-hotbar 2.4/D1/D5）：召唤通道——SHALL NOT 受输入
+               桥就绪门控（不写当前会话输入框），纳入**召唤类共享在途锁**（与巢栏召唤
+               同款，防双击双蜂）；title 附落点语义说明。 */
+            blocked = blocked || empty || summonBusy;
+            title = prompt ? prompt + " · " + t("hive.bar.beeNewSessionTitle") : t("hive.bar.beeNewSessionTitle");
           } else {
             blocked = blocked || empty || (slot.autoSend !== true && !bridgeReady);
           }
@@ -4617,21 +4649,13 @@ function HotbarBar({ t, kind, slots, layout, bridgeReady, workerReady, disabled,
           blocked = blocked || slot.summon !== true || summonBusy;
           title = slot.summon === true ? prompt || t("hive.bar.pureSummon") : t("hive.bar.summonOff");
         } else if (kind === "proposal") {
-          /* 提案栏门控（add-proposal-panel 5.5/D5）：summon 关时——勾 autoSend 需当前
-             会话蜂（缺席禁用 + title 说明），未勾需桥就绪；summon 开时不受前两项门控，
-             但受在途锁约束（同一时刻至多一次提案指令执行）。提示词必填（无「纯召唤」
-             分支：召唤通道的 prompt 即首条消息，空白由编辑器已挡）。 */
-          if (slot.summon === true) {
-            blocked = blocked || proposalBusy;
-            title = prompt;
-          } else if (slot.autoSend === true) {
-            const noBee = !workerReady;
-            blocked = blocked || noBee || proposalBusy;
-            title = noBee ? t("hive.bar.proposalNoBee") : prompt;
-          } else {
-            blocked = blocked || !bridgeReady || proposalBusy;
-            title = prompt;
-          }
+          /* 提案栏门控（add-proposal-panel 5.5/D5；new-session-hotbar 3.2/D6 收敛）：
+             **恒召唤 → 单一可用性门控 = 在途锁**（同一时刻至多一次提案指令执行，
+             双击 SHALL NOT 产生两个新蜂）；SHALL NOT 依赖当前会话蜂或输入桥就绪
+             ——提案选中聚焦工作区而非任何会话。提示词必填（无「纯召唤」分支：召唤
+             通道的 prompt 即首条消息，空白由编辑器已挡）。 */
+          blocked = blocked || proposalBusy;
+          title = prompt;
         } else {
           blocked = blocked || floorBusy;
           title = prompt || t("hive.bar.floorHint");
@@ -4643,7 +4667,13 @@ function HotbarBar({ t, kind, slots, layout, bridgeReady, workerReady, disabled,
             className="jyv-hbCard"
             data-auto={slot.autoSend === true || undefined}
             data-action={slot.action || undefined}
-            data-busy={(kind === "hive" && summonBusy) || (kind === "floor" && floorBusy) || (kind === "proposal" && proposalBusy) || undefined}
+            data-busy={
+              (kind === "hive" && summonBusy)
+              || (kind === "bee" && slot.newSession === true && summonBusy)
+              || (kind === "floor" && floorBusy)
+              || (kind === "proposal" && proposalBusy)
+              || undefined
+            }
             disabled={blocked}
             title={title}
             onClick={() => onSlot(slot)}
@@ -5251,16 +5281,17 @@ function HotbarsModal({ t, hotbars, beeTypes, layout, guardRef, onClose, onSave,
     }));
   const addSlot = () => {
     setError(null);
-    /* 形状三元按栏分派（context-hotbar-rework 5.x + add-proposal-panel 5.6 +
-       proposal-panel-config 4.4）：提案栏形状 = 提示词模板（必填）+ 新召唤开关
-       （默认否）+ 状态置位缺省 + **引用提案目录（默认勾选）**。 */
+    /* 形状按栏分派（context-hotbar-rework 5.x + add-proposal-panel 5.6 +
+       proposal-panel-config 4.4 + new-session-hotbar 4.4）：蜂栏 = 提示词必填 +
+       **新开会话缺省不勾**；提案栏 = 提示词模板（必填）+ 状态置位缺省 + **引用
+       提案目录（默认勾选）**（`summon` 键随恒召唤退役，种子不再携带）。 */
     const fresh =
       section === "bee"
-        ? { id: newSlotId(), name: "", prompt: "", autoSend: false }
+        ? { id: newSlotId(), name: "", prompt: "", autoSend: false, newSession: false }
         : section === "hive"
           ? { id: newSlotId(), name: "", summon: false, autoSend: false }
           : section === "proposal"
-            ? { id: newSlotId(), name: "", summon: false, prompt: "", autoSend: false, citeName: true }
+            ? { id: newSlotId(), name: "", prompt: "", autoSend: false, citeName: true }
             : { id: newSlotId(), name: "", createBee: true, autoSend: false };
     setDraft((prev) => ({ ...prev, [section]: [...prev[section], fresh] }));
     setSelectedId(fresh.id);
@@ -5463,16 +5494,30 @@ function HotbarsModal({ t, hotbars, beeTypes, layout, guardRef, onClose, onSave,
               </div>
               {selectedId === row.id ? (
                 <div className="jyv-hbForm" onClick={(e) => e.stopPropagation()}>
-                  {/* 新召唤开关（巢栏 / 提案栏，add-proposal-panel 5.6）：提案栏勾选后
-                      点击卡片在该提案所属工作区召唤新蜂（cwd = 提案所属工作区）。 */}
-                  {section === "hive" || section === "proposal" ? (
-                    <label className="jyv-qcAuto" title={section === "proposal" ? t("hive.hb.proposalSummonHint") : t("hive.hb.summonHint")}>
+                  {/* 新召唤开关（仅巢栏；add-proposal-panel 5.6 的提案栏开关随
+                      new-session-hotbar 4.3 退役——提案槽位恒召唤）。 */}
+                  {section === "hive" ? (
+                    <label className="jyv-qcAuto" title={t("hive.hb.summonHint")}>
                       <input
                         type="checkbox"
                         checked={row.summon === true}
                         onChange={(e) => patchSlot(row.id, { summon: e.target.checked })}
                       />
                       {t("hive.hb.summon")}
+                    </label>
+                  ) : null}
+                  {/* 蜂栏「新开会话」（new-session-hotbar 4.1/D1）：默认不勾；
+                      勾选 → 点击在「当前会话蜂所属工作区」新建会话（蜂种随勾选可用，
+                      未勾时联动禁用）。 */}
+                  {section === "bee" ? (
+                    <label className="jyv-qcAuto" title={t("hive.hb.newSessionHint")}>
+                      <input
+                        type="checkbox"
+                        data-testid="hb-bee-newSession"
+                        checked={row.newSession === true}
+                        onChange={(e) => patchSlot(row.id, { newSession: e.target.checked })}
+                      />
+                      {t("hive.hb.newSession")}
                     </label>
                   ) : null}
                   {section === "floor" ? (
@@ -5485,31 +5530,37 @@ function HotbarsModal({ t, hotbars, beeTypes, layout, guardRef, onClose, onSave,
                       {t("hive.hb.createBee")}
                     </label>
                   ) : null}
-                  {section !== "bee" ? (
-                    <label className="jyv-swarmField">
-                      <span>{t("hive.hb.beeType")}</span>
-                      <select
-                        value={row.beeTypeId ?? ""}
-                        /* 字段联动禁用：巢栏/提案栏随 summon、地板栏随 createBee
-                           （提案栏蜂种是「新召唤落哪个蜂种」，故与 summon 联动）。 */
-                        disabled={
-                          section === "hive" || section === "proposal"
-                            ? row.summon !== true
-                            : row.createBee !== true
-                        }
-                        onChange={(e) => patchSlot(row.id, e.target.value ? { beeTypeId: e.target.value } : { beeTypeId: undefined })}
-                      >
-                        <option value="">{t("hive.hb.beeTypeDefault")}</option>
-                        {beeTypes.map((bt) => (
-                          <option key={bt.id} value={bt.id}>{bt.name || bt.id}</option>
-                        ))}
-                      </select>
-                    </label>
-                  ) : null}
-                  {/* LLM 模型（add-hotbar-llm-model-and-import 5.1/D5，三栏全开）：键 = 两维
+                  <label className="jyv-swarmField">
+                    <span>{t("hive.hb.beeType")}</span>
+                    <select
+                      data-testid="hb-beeType"
+                      value={row.beeTypeId ?? ""}
+                      /* 字段联动禁用（new-session-hotbar 4.1/4.3/D3/D6）：巢栏随 summon、
+                         地板栏随 createBee、蜂栏随 newSession；**提案栏恒可用**（恒召唤，
+                         蜂种恒适用）。 */
+                      disabled={
+                        section === "hive"
+                          ? row.summon !== true
+                          : section === "floor"
+                            ? row.createBee !== true
+                            : section === "bee"
+                              ? row.newSession !== true
+                              : false
+                      }
+                      onChange={(e) => patchSlot(row.id, e.target.value ? { beeTypeId: e.target.value } : { beeTypeId: undefined })}
+                    >
+                      <option value="">{t("hive.hb.beeTypeDefault")}</option>
+                      {beeTypes.map((bt) => (
+                        <option key={bt.id} value={bt.id}>{bt.name || bt.id}</option>
+                      ))}
+                    </select>
+                  </label>
+                  {/* LLM 模型（add-hotbar-llm-model-and-import 5.1/D5，四栏全开）：键 = 两维
                       `provider/model`（受控 value 与 option value 同出 modelKeyOf）；空键 =
                       「使用默认模型」= 不绑定（跟随部署默认 `modelCatalog().default`）。
-                      字段联动禁用与提示词同门控（巢栏 summon 关 / 地板栏 createBee 关）。
+                      字段联动禁用（new-session-hotbar 4.2/D3/D6）：巢栏随 summon、地板栏随
+                      createBee；**蜂栏与提案栏恒启用**（蜂栏双语义：直发 = 切当前会话蜂模型 /
+                      新开会话 = 新蜂选型；提案栏恒召唤 = 新蜂选型）。
                       目录 loading/unavailable → 提示替代控件，草稿已存值保留不丢。 */}
                   <label className="jyv-swarmField jyv-swarmFieldGrow">
                     <span>{t("hive.hb.model")}</span>
@@ -5520,7 +5571,7 @@ function HotbarsModal({ t, hotbars, beeTypes, layout, guardRef, onClose, onSave,
                     ) : (
                       <select
                         value={row.model ? modelKeyOf(row.model) : MODEL_KEY_NONE}
-                        disabled={section === "hive" || section === "proposal" ? row.summon !== true : section === "floor" ? row.createBee !== true : false}
+                        disabled={section === "hive" ? row.summon !== true : section === "floor" ? row.createBee !== true : false}
                         onChange={(e) => {
                           const entry = modelOptions.byKey.get(e.target.value) ?? null;
                           /* 换模型 = 重选绑定（旧档位不跨模型沿用）；切回默认 → 写 undefined
@@ -5534,6 +5585,7 @@ function HotbarsModal({ t, hotbars, beeTypes, layout, guardRef, onClose, onSave,
                       </select>
                     )}
                   </label>
+                  {section === "bee" ? <div className="jyv-swarmHint">{t("hive.hb.beeModelHint")}</div> : null}
                   {/* 推理档位（独立控件）：仅所选模型暴露 reasoning.efforts 时渲染（否则整控件
                       不渲染）；首项空键「模型默认档位」不写 reasoningEffort（由宿主按目录
                       defaultEffort 语义执行）。 */}
@@ -5545,7 +5597,7 @@ function HotbarsModal({ t, hotbars, beeTypes, layout, guardRef, onClose, onSave,
                         <span>{t("hive.hb.effort")}</span>
                         <select
                           value={effortOptions.selectedEffortKey}
-                          disabled={section === "hive" || section === "proposal" ? row.summon !== true : section === "floor" ? row.createBee !== true : false}
+                          disabled={section === "hive" ? row.summon !== true : section === "floor" ? row.createBee !== true : false}
                           onChange={(e) => {
                             const entry = effortOptions.byKey.get(e.target.value) ?? null;
                             if (!row.model) return;
@@ -5634,6 +5686,7 @@ function HotbarsModal({ t, hotbars, beeTypes, layout, guardRef, onClose, onSave,
                   </label>
                   {section === "hive" && row.summon === true ? <div className="jyv-swarmHint">{t("hive.hb.pureSummonHint")}</div> : null}
                   {section === "hive" && row.summon !== true ? <div className="jyv-swarmHint">{t("hive.hb.summonOffHint")}</div> : null}
+                  {section === "proposal" ? <div className="jyv-swarmHint">{t("hive.hb.proposalAlwaysSummonHint")}</div> : null}
                   {section === "proposal" ? <div className="jyv-swarmHint">{t("hive.hb.proposalSlotHint")}</div> : null}
                 </div>
               ) : null}

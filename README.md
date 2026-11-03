@@ -22,8 +22,11 @@ DeepSeek Harness Web 插件：用 three.js 构建 3D「无限蜂巢」——工�
 
 ### 情境道具栏
 
-- 页面底部 m×n 卡片阵列，按选中对象三态切换：
-  **巢栏**（召唤新蜂：蜂种 + 预设提示词 + 自动发送）、**地板栏**（建巢，可连带建蜂）、**蜂栏**（Prompt 追加输入框 / followup 直发）
+- 页面底部 m×n 卡片阵列，按选中对象四态切换：
+  **巢栏**（召唤新蜂：蜂种 + 预设提示词 + 自动发送）、**地板栏**（建巢，可连带建蜂）、
+  **蜂栏**（Prompt 追加输入框 / followup 直发；勾选「新开会话」后点击在**当前会话蜂所属巢**
+  召唤新蜂——零上下文发起工具型指令，蜂种随勾选放出、模型双语义）、**提案栏**（恒召唤：
+  在提案所属工作区召唤新蜂，支持 `{change}` 模板；不再有「新召唤」开关）
 - 内置动作卡：继续 / 归档会话 / 打开会话（蜂栏常驻）；建巢（地板栏空栏回退）
 - ⌘ 指令编辑器：槽位增删改、排序、字段校验、409 冲突重放
 
@@ -250,12 +253,16 @@ pnpm test    # 全量冒烟测试（含宿主契约；需本机已安装 dsh 或
 {
   "hotbars": {
     "hive":     [ { "id": "…", "name": "召唤设计蜂", "summon": true, "beeTypeId": "bt-design", "prompt": "…", "autoSend": false } ],
-    "bee":      [ { "id": "…", "name": "跑测试", "prompt": "…", "autoSend": true } ],
+    // 蜂栏：newSession 缺省不落盘（未勾 = 既有双通道）；勾选时另携带 beeTypeId
+    // （读取路径对未勾槽位裁剪该键，缺省 = 默认蜂）。
+    "bee":      [ { "id": "…", "name": "跑测试", "prompt": "…", "autoSend": true },
+                  { "id": "…", "name": "跑测试（新会话）", "prompt": "…", "autoSend": true, "newSession": true, "beeTypeId": "bt-design" } ],
     "floor":    [ { "id": "…", "name": "新巢建蜂", "createBee": true, "autoSend": false } ],
-    // 提案栏：prompt 必填（模板，{change} = 选中提案名）；citeName 缺省 = 勾选
+    // 提案栏恒走召唤通道（summon 已退役：存量键读取时剥离、SHALL NOT 再物化）；
+    // prompt 必填（模板，{change} = 选中提案名）；citeName 缺省 = 勾选
     // （执行前把 @提案名 前置到提示词最前）；setStatus 只做形状校验，
     // 不在当前状态列表即执行时静默跳过。
-    "proposal": [ { "id": "…", "name": "继续推进", "summon": false, "prompt": "继续推进 {change}", "autoSend": true, "setStatus": "reviewed", "citeName": false } ]
+    "proposal": [ { "id": "…", "name": "继续推进", "beeTypeId": "bt-design", "prompt": "继续推进 {change}", "autoSend": true, "setStatus": "reviewed", "citeName": false } ]
   }
 }
 ```

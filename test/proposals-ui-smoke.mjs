@@ -10,12 +10,15 @@
  *    浮窗优先于提案选中、提案选中不占场景选中槽）；
  *  - 编辑器第四节 = 提案栏（tab id / 面板 id）；状态下拉受限枚举；
  *  - 校验拒绝（提案栏提示词空白 → missingPrompt）、名称重复；
- *  - **`proposals-changed` 轻帧不改动 lane/等待镜像**（帧类型守卫，D9 硬要求）。
+ *  - **`proposals-changed` 轻帧不改动 lane/等待镜像**（帧类型守卫，D9 硬要求）；
+ *  - **提案栏门控收敛与置位判据**（new-session-hotbar 6.3）：HotbarBar 仅受
+ *    `proposalBusy`（无当前会话蜂仍可用）、置位判据 = 「召唤请求被宿主接受」
+ *    （`proposalSlotOutcome` 纯函数单点）。
  * 运行：node test/proposals-ui-smoke.mjs（先 node build.mjs）
  */
 import { readFileSync } from "node:fs";
 import { resolveHotbarKind } from "../src/hotbars.mjs";
-import { PROPOSAL_ROW_PX, PROPOSAL_STATUSES } from "../src/proposals.mjs";
+import { PROPOSAL_ROW_PX, PROPOSAL_STATUSES, proposalSlotOutcome } from "../src/proposals.mjs";
 
 const code = readFileSync(new URL("../lib/client.js", import.meta.url), "utf8");
 
@@ -717,6 +720,36 @@ const propForm = render(m.HotbarsModal(modalProps()));
   ok(okPayload !== null, "合法提案槽位 → 保存放行");
   eq(okPayload.proposal[0].setStatus, "paused", "setStatus 随载荷落盘");
   eq(okPayload.proposal[0].prompt, "推进 {change}", "提示词模板原样落盘（不插值）");
+}
+
+/* ── 6b. 提案栏门控收敛与置位判据（new-session-hotbar 3.2/3.3/6.3） ── */
+{
+  /* 门控：仅 `proposalBusy`（同类可用性门控）——组件不再接收 `workerReady`，
+     无当前会话蜂、无输入桥就绪时提案卡仍可用；在途期禁用（双击防抖）。 */
+  const proposalSlotNoSwitch = { id: "p1", name: "推进", prompt: "推进 {change}", autoSend: true, setStatus: "reviewed" };
+  const propBar = (busy, slot = proposalSlotNoSwitch) => render(m.HotbarBar({
+    t, kind: "proposal", slots: [slot], layout: { barM: 4, barN: 1 }, disabled: false,
+    summonBusy: false, floorBusy: false, proposalBusy: busy, onSlot: () => {}
+  }));
+  const propButton = (tree) => collect(tree, (n) => n.tag === "button")[0];
+  eq(propButton(propBar(false)).props.disabled, false, "提案卡恒可用：无当前会话蜂 / 无桥就绪入参仍可点（门控不依赖会话）");
+  eq(propButton(propBar(false)).props.title, "推进 {change}", "title = 提示词（「无当前蜂」分支文案已随门控收敛删除）");
+  eq(propButton(propBar(true)).props.disabled, true, "在途 → 禁用（单飞锁，双击 SHALL NOT 产生两个新蜂）");
+  eq(propButton(propBar(true)).props["data-busy"], true, "在途 → data-busy 视觉在途态");
+  /* 退役字段 summon 不参与门控：存量 true/false 与无该键同判（恒召唤） */
+  eq(propButton(propBar(false, { ...proposalSlotNoSwitch, summon: false })).props.disabled, false, "存量 summon=false 不影响可用性（恒召唤）");
+  eq(propButton(propBar(false, { ...proposalSlotNoSwitch, summon: true })).props.disabled, false, "存量 summon=true 同判（字段已退役，不影响门控）");
+
+  /* 置位判据 = 「召唤请求被宿主接受」（纯函数单点，3.3/D6）：与投递/填稿结果无关 */
+  eq(proposalSlotOutcome({ ok: true }, { autoSend: true }), { accepted: true, review: false }, "召唤被接受 + 勾自动发送 → 置位、无审查收尾");
+  eq(proposalSlotOutcome({ ok: true }, { autoSend: false }), { accepted: true, review: true }, "召唤被接受 + 未勾自动发送 → 置位 + 审查收尾（会话已建即置位，不待填稿结果）");
+  eq(proposalSlotOutcome({ ok: false }, { autoSend: false }), { accepted: false, review: false }, "请求被拒 → 不置位、不审查（投递结果不回溯改判）");
+  eq(proposalSlotOutcome(undefined, { autoSend: true }), { accepted: false, review: false }, "无响应 → 不置位（防御）");
+
+  /* 产物级锚点：直发/填稿通道与「无当前蜂」门控文案退役（通道收敛的静态证据） */
+  ok(!code.includes("hive.proposal.toast.sendFailed"), "产物不再携带提案直发失败文案（直发通道退役）");
+  ok(!code.includes("hive.hb.proposalSummonHint"), "产物不再携带提案栏「新召唤」开关文案（编辑器开关退役）");
+  ok(!code.includes("hive.bar.proposalNoBee"), "产物不再携带「无当前会话蜂」门控文案（门控收敛为单一在途锁）");
 }
 
 /* ── 7. proposals-changed 轻帧不改动 lane/等待镜像（D9 帧类型守卫） ── */

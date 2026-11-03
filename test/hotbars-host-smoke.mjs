@@ -250,6 +250,49 @@ eq(put7.status, 200, "重放（最新 revision）→ 200");
 frame = lastFrame();
 ok(frame && frame.type === "layout-changed" && frame.doc.hotbars?.hive?.[0]?.name === "另一页签", "广播帧收敛两页签的 hotbars");
 
+/* ── 槽位 zod 宽容化（new-session-hotbar D9/6.4）：恰好两处放宽 ── */
+const currentRev = async () => (await callRoute("GET", "/api/dsh-hive/state")).body.doc.revision;
+const putBeeNewSession = await callRoute("PUT", "/api/dsh-hive/state", {
+  revision: await currentRev(),
+  hotbars: {
+    hive: [],
+    bee: [{ id: "b1", name: "新开会话", prompt: "跑测试", autoSend: true, newSession: true, beeTypeId: "bt-design" }],
+    floor: []
+  }
+});
+eq(putBeeNewSession.status, 200, "蜂栏槽位带 newSession/beeTypeId → 200（D9 收两键 optional）");
+eq(putBeeNewSession.body.doc.hotbars.bee[0].newSession, true, "newSession 随文档落库");
+eq(putBeeNewSession.body.doc.hotbars.bee[0].beeTypeId, "bt-design", "beeTypeId 随文档落库（仅勾选槽位客户端才发）");
+const putBeeLegacy = await callRoute("PUT", "/api/dsh-hive/state", {
+  revision: await currentRev(),
+  hotbars: { hive: [], bee: [{ id: "b2", name: "默认卡", prompt: "p", autoSend: false }], floor: [] }
+});
+eq(putBeeLegacy.status, 200, "未勾槽位（无两键）→ 200");
+eq(putBeeLegacy.body.doc.hotbars.bee[0].newSession ?? null, null, "缺省不落 newSession 键（缺省不物化）");
+eq(putBeeLegacy.body.doc.hotbars.bee[0].beeTypeId ?? null, null, "缺省不落 beeTypeId 键");
+/* 提案槽位：summon 退役为 optional——带键（存量）与不带键（新形态）都 200 */
+const putProposalSummon = await callRoute("PUT", "/api/dsh-hive/state", {
+  revision: await currentRev(),
+  hotbars: {
+    hive: [],
+    bee: [],
+    floor: [],
+    proposal: [{ id: "p1", name: "推进", summon: false, prompt: "推进 {change}", autoSend: false }]
+  }
+});
+eq(putProposalSummon.status, 200, "提案槽位带 summon → 200（optional 宽容读，SHALL NOT 400）");
+const putProposalNoSummon = await callRoute("PUT", "/api/dsh-hive/state", {
+  revision: await currentRev(),
+  hotbars: { hive: [], bee: [], floor: [], proposal: [{ id: "p2", name: "推进二", prompt: "p", autoSend: true }] }
+});
+eq(putProposalNoSummon.status, 200, "提案槽位不带 summon → 200（字段退役后新形态）");
+/* 宽容化边界不扩大：蜂栏 summon 键仍 strict 400（提案栏之外的未知键照旧拒绝） */
+const putBeeSummon = await callRoute("PUT", "/api/dsh-hive/state", {
+  revision: await currentRev(),
+  hotbars: { hive: [], bee: [{ id: "b3", name: "坏字段", prompt: "p", autoSend: false, summon: true }], floor: [] }
+});
+eq(putBeeSummon.status, 400, "蜂栏仍 strict：summon 键 → 400（不顺手放宽无关键）");
+
 /* ── POST /summon：autoSend 两分支 ── */
 /* 直发分支：autoSend 真 + 非空 prompt → create + prompt 直调（无蜂种 = 默认蜂，不 selectModel） */
 const sum1 = await callRoute("POST", "/api/dsh-hive/summon", {

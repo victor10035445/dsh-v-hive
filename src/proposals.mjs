@@ -118,6 +118,21 @@ export function isKnownProposalStatus(list, id) {
   return proposalStatusOf(list, id) !== null;
 }
 
+/**
+ * 提案槽位执行结果分流（new-session-hotbar 3.3/D6）：**置位判据 = 「召唤请求被宿主
+ * 接受」**（`result.ok === true`），与投递/填稿结果无关——审查路径会话已建即执行事实
+ * 成立，投递结果不回溯改判。`review` = 未勾自动发送的审查收尾（种子稿 + 关页直达），
+ * 仅在请求被接受后成立。
+ *
+ * @param {{ok?: boolean}|null|undefined} result POST /summon 的客户端响应
+ * @param {{autoSend?: boolean}|null|undefined} slot 槽位
+ * @returns {{accepted: boolean, review: boolean}}
+ */
+export function proposalSlotOutcome(result, slot) {
+  const accepted = result?.ok === true;
+  return { accepted, review: accepted && slot?.autoSend !== true };
+}
+
 /* ── 名称与颜色（回退链单点，D3） ── */
 
 /**

@@ -4,17 +4,22 @@
  * 独立模块——client.jsx 消费、冒烟测试直测（替代旧 src/commands.mjs）。
  * hotbar-default-actions 增量：内置默认动作卡骨架（D2）与栏级回退派生。
  * add-proposal-panel 增量：第四栏 `proposal`（提案指令栏，design D5）。
+ * new-session-hotbar 增量：蜂栏 `newSession`（新开会话标记）字段与工蜂口径收紧
+ * （仅认巢内蜂）；提案栏 `summon` 退役（恒召唤）。
  *
  * 槽位形状（扁平，一套 schema + 按栏裁剪）：
- *   { id, name, summon?, beeTypeId?, createBee?, model?, prompt?, autoSend, setStatus?, citeName? }
- * 字段矩阵：
+ *   { id, name, summon?, beeTypeId?, createBee?, newSession?, model?, prompt?, autoSend, setStatus?, citeName? }
+ * 字段矩阵（new-session-hotbar 1.1/1.2 修订）：
  *   - hive（巢栏）：summon 适用（默认否）；无 createBee；提示词/LLM 模型/蜂种仅召唤开启时有意义；
- *   - bee（蜂栏）：召唤灰置（恒否）、无 summon/beeTypeId/createBee；提示词必填；LLM 模型适用
- *     （点击直发时切当前会话蜂模型——见 hotbar-card-model）；
+ *   - bee（蜂栏）：无 summon/createBee；**`newSession`** = 新开会话标记（默认否，
+ *     **缺省不物化落盘**——沿用 `citeName` 先例）；蜂种仅 `newSession` 开启时收
+ *     （**读取路径裁剪**，缺省 = 默认蜂）；提示词必填；LLM 模型恒适用（直发 = 切
+ *     当前会话蜂模型 / 召唤 = 新蜂选型——见 hotbar-card-model）；
  *   - floor（地板栏）：建巢恒开（无开关字段必要，createBee 指建蜂）；提示词/LLM 模型/蜂种仅建蜂开启时有意义；
- *   - proposal（提案栏）：summon 新召唤开关（默认否，召唤目标 = 提案所属工作区）；提示词**必填**
- *     （模板，支持 `{change}`）；蜂种/模型仅召唤开启时收（**读取路径裁剪**）；`setStatus`
- *     为执行成功后写入的卡片状态 id（optional；**形状校验为非空字符串，不对代码常量枚举
+ *   - proposal（提案栏）：**恒召唤**——`summon` 字段已退役（读路径对存量键**剥离**、
+ *     SHALL NOT 再物化；点击执行恒在提案所属工作区召唤新蜂，见 proposal-panel）；
+ *     提示词**必填**（模板，支持 `{change}`）；蜂种/模型**恒适用**（不随任何开关联动裁剪）；
+ *     `setStatus` 为执行成功后写入的卡片状态 id（optional；**形状校验为非空字符串，不对代码常量枚举
  *     封闭**——proposal-panel-config D4，取值是否在当前列表由执行点与置位路由判定）；
  *     `citeName` = 执行前在提示词最前引用提案名的开关（optional，**读取缺省 = 勾选**，
  *     消费点以 `slot.citeName !== false` 判定；缺省**不物化落盘**）。
@@ -39,8 +44,8 @@ export function emptyHotbars() {
 /* ── 按栏字段矩阵（归一化与校验共用） ── */
 
 /** 提示词/蜂种/模型字段的启用开关（字段联动：关 → 字段不接受）。
- *  蜂栏提示词恒启用（必填）；提案栏提示词恒必填（模板，不随 summon 裁剪）；
- *  巢栏随 summon、地板栏随 createBee。 */
+ *  蜂栏提示词恒启用（必填）；提案栏**恒召唤**、提示词恒必填（模板，不随任何开关裁剪，
+ *  蜂种/模型亦恒适用——new-session-hotbar 1.2）；巢栏随 summon、地板栏随 createBee。 */
 function promptGate(kind, slot) {
   if (kind === "hive") return slot.summon === true;
   if (kind === "floor") return slot.createBee === true;
@@ -93,8 +98,8 @@ export function normalizeSlot(kind, raw) {
     name,
     autoSend: raw.autoSend === true
   };
-  /* 按栏裁剪：蜂栏无召唤/蜂种/建蜂字段；巢栏无 createBee；地板栏建巢恒开；
-     提案栏无 createBee，summon 适用、提示词必填、setStatus 受限枚举。 */
+  /* 按栏裁剪：蜂栏无 summon/createBee（蜂种随 newSession 裁剪）；巢栏无 createBee；
+     地板栏建巢恒开；提案栏无 createBee 且 summon 已退役（恒召唤）。 */
   if (kind === "floor") {
     slot.createBee = raw.createBee === true;
     if (slot.createBee === true) {
@@ -115,17 +120,14 @@ export function normalizeSlot(kind, raw) {
       if (typeof raw.prompt === "string" && raw.prompt.trim()) slot.prompt = raw.prompt;
     }
   } else if (kind === "proposal") {
-    /* 提案栏（add-proposal-panel 3.1/D5）：提示词**必填且不随 summon 裁剪**（两条通道都
-       以它为准：召唤通道投递首条消息、直发通道发给当前会话蜂）；蜂种与模型仅召唤开启时
-       适用（与巢栏同口径的读取路径裁剪——SHALL NOT 作为保存拒绝理由）。 */
+    /* 提案栏恒召唤（new-session-hotbar 1.2/D6）：`summon` 字段退役——本分支**不再
+       物化**该键（存量 `summon=false` 经读取路径静默升级为召唤语义，不丢槽位）；
+       提示词必填；蜂种与模型**恒适用**（不再随任何开关联动裁剪）。 */
     if (typeof raw.prompt !== "string" || !raw.prompt.trim()) return null; // 必填（坏数据过滤）
-    slot.summon = raw.summon === true;
     slot.prompt = raw.prompt;
-    if (slot.summon) {
-      if (typeof raw.beeTypeId === "string" && raw.beeTypeId) slot.beeTypeId = raw.beeTypeId;
-      const model = normalizeSlotModel(raw.model);
-      if (model) slot.model = model;
-    }
+    if (typeof raw.beeTypeId === "string" && raw.beeTypeId) slot.beeTypeId = raw.beeTypeId;
+    const model = normalizeSlotModel(raw.model);
+    if (model) slot.model = model;
     /* setStatus 形状校验（D4：非空字符串即可，枚举外/缺省剥离该字段而不丢槽位）；
        槽位编辑器下拉只列当前列表，故「引用已删状态」的存量值在此**原样保留**（读取
        路径不静默清空——与「（已删除）」占位项配套）。 */
@@ -135,6 +137,15 @@ export function normalizeSlot(kind, raw) {
        ——旧槽位自动获得新行为，且文档不被归一化写入污染）。 */
     if (typeof raw.citeName === "boolean") slot.citeName = raw.citeName;
   } else {
+    /* 蜂栏（new-session-hotbar 1.1/D1/D3）：`newSession` 缺省**不物化**——仅
+       `newSession === true` 时落字段（旧文档零迁移、旧槽位自动获得「未勾 = 现状」
+       语义）；`beeTypeId` 仅 `newSession` 开启时收（读取路径联动裁剪，缺省 = 默认蜂），
+       SHALL NOT 成为保存拒绝理由。提示词必填；模型恒适用（直发切当前蜂模型 /
+       召唤新蜂选型）。 */
+    if (raw.newSession === true) {
+      slot.newSession = true;
+      if (typeof raw.beeTypeId === "string" && raw.beeTypeId) slot.beeTypeId = raw.beeTypeId;
+    }
     const model = normalizeSlotModel(raw.model);
     if (model) slot.model = model;
     if (typeof raw.prompt === "string" && raw.prompt.trim()) slot.prompt = raw.prompt;
@@ -183,9 +194,11 @@ export function normalizeHotbars(raw) {
  * 另返回 overflow：超出 capacity（该栏显示阵列 m×n）的槽位数（>0 → 保存允许但
  * 编辑器呈现超出提示，spec「容量溢出不渲染」）。
  *
- * **提案栏 `beeTypeId` 与 `summon` 的联动 SHALL NOT 成为保存拒绝理由**（与巢/地板栏
- * 同口径，R15）：两端校验器今天都只认 `prompt` 的 gate，凭空新增 `beeTypeId` 规则会
- * 造成不对称；联动只走读取路径裁剪（normalizeSlot 关时不收）。
+ * **蜂栏 `newSession`/`beeTypeId` 与提案栏 `beeTypeId` 的联动 SHALL NOT 成为保存
+ * 拒绝理由**（new-session-hotbar 1.4；与巢/地板栏同口径）：蜂栏联动只走读取路径裁剪
+ * （normalizeSlot 未勾 newSession 即不收 beeTypeId），提案栏蜂种恒适用；两端校验器都不
+ * 凭空新增联动规则，避免「客户端放行 → 宿主 400」的不对称。蜂栏/提案栏提示词必填口径
+ * 不变（missingPrompt）。
  */
 export function validateSlotDraft(rows, kind, { capacity } = {}) {
   const names = new Set();
@@ -329,12 +342,15 @@ export function appendPrompt(draft, prompt) {
 
 /**
  * 工蜂门控（原 hive-quick-commands 4.2，蜂栏/覆盖面板门控复用）：返回当前选中
- * 工蜂的 sessionId 或 null。工蜂 = 巢内主蜂或野蜂（未分组主会话）；无人机与非蜂
- * 对象不算；任何非蜂显式选中（巢/瓦片/蜜杯，蜂不入槽）与清选中 → null。
+ * 工蜂的 sessionId 或 null。**工蜂 SHALL 仅认巢内蜂**（new-session-hotbar
+ * 1.3/D2，用户决策①）——野蜂（未分组主会话）SHALL NOT 被视为工蜂（数据层与
+ * 3D「野蜂箱已移除」的视觉层对齐；野蜂无所属工作区，蜂栏 newSession 落点因此
+ * 恒可解析）。无人机与非蜂对象不算；任何非蜂显式选中（巢/瓦片/蜜杯，蜂不入槽）
+ * 与清选中 → null。
  *
- * world 为 bee-model 派生世界（studios[].bees 为主蜂、wildBees 为野蜂）；无人机
- * 排除走 sessionsState.byId[].origin === "subagent"（权威分类，覆盖 orphan 降级
- * 混入 studio.bees / wildBees 的边角——bee-model 未在卡面透出 origin）。
+ * world 为 bee-model 派生世界（studios[].bees 为主蜂）；无人机排除走
+ * sessionsState.byId[].origin === "subagent"（权威分类，覆盖 orphan 降级
+ * 混入 studio.bees 的边角——bee-model 未在卡面透出 origin）。
  */
 export function workerBeeIdOf(world, current, selection, sessionsState) {
   if (selection) return null;
@@ -344,9 +360,6 @@ export function workerBeeIdOf(world, current, selection, sessionsState) {
     for (const bee of studio?.bees ?? []) {
       if (bee?.sessionId === current) return current;
     }
-  }
-  for (const wild of world?.wildBees ?? []) {
-    if (wild?.sessionId === current) return current;
   }
   return null;
 }

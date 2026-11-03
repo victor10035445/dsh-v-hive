@@ -5,10 +5,12 @@
  *    重名去重 / 旧坏数据按空处理 / 槽位 `model` 透传（四栏全开、与
  *    prompt/beeTypeId 同门控、形状非法仅剥离字段不丢槽位）/
  *    **`setStatus` 形状放宽（非空字符串，不再枚举封闭）与 `citeName` 透传不物化**
- *    （proposal-panel-config 1.3）；
+ *    （proposal-panel-config 1.3）/ **蜂栏 `newSession` 缺省不物化 + `beeTypeId`
+ *    读取裁剪、提案栏 `summon` 键剥离**（new-session-hotbar 1.1/1.2）；
  *  - validateSlotDraft：名称非空唯一 / 蜂栏与提案栏提示词必填 / 召唤·建蜂关闭提示词
  *    不接受 / `model` 形状字段级拒绝（hive.hb.err.invalidModel，R6）/
- *    上限 32 / 容量超出提示键（保存允许）/ 提案栏 `beeTypeId` 无拒绝规则（R15）；
+ *    上限 32 / 容量超出提示键（保存允许）/ 蜂栏 `newSession`·`beeTypeId` 与提案栏
+ *    蜂种无拒绝规则（new-session-hotbar 1.4）；
  *  - resolveHotbarKind：**四态**互斥门控矩阵（studio/tile/cup/空 × selectedBee ×
  *    浮窗态 × 提案选中）；
  *  - hotbar-default-actions：DEFAULT_HOTBAR_SLOTS 骨架形状（巢栏空骨架、
@@ -18,7 +20,7 @@
  *    非空 → 用户组原样、四栏互不影响、t 注入文案解析、非数组容错、
  *    未知 kind 安全空）；
  *  - appendPrompt 拼接语义 + workerBeeIdOf 门控矩阵（工蜂/无人机/orphan 无人机/
- *    野蜂/非蜂选中/清选中/未渲染会话）。
+ *    野蜂 → null（工蜂 = 巢内蜂，new-session-hotbar 1.3）/非蜂选中/清选中/未渲染会话）。
  * 运行：node test/hotbars-smoke.mjs
  */
 import {
@@ -69,27 +71,34 @@ const norm = normalizeHotbars({
     { id: "b2", name: "空白提示词", prompt: "  " }, // 蜂栏提示词必填 → 滤
     { id: "b3", name: "带召唤字段", prompt: "x", summon: true, createBee: true }, // 蜂栏字段矩阵裁剪
     { id: "b4", name: "无提示词" }, // 蜂栏提示词缺失 → 滤
-    { id: "b5", name: "档位坏", prompt: "y", model: { provider: "p", model: "m", reasoningEffort: 5 } } // 档位非字符串 → 剥离
+    { id: "b5", name: "档位坏", prompt: "y", model: { provider: "p", model: "m", reasoningEffort: 5 } }, // 档位非字符串 → 剥离
+    /* new-session-hotbar 1.1/D1/D3：newSession 仅 true 落字段；beeTypeId 随 newSession 裁剪 */
+    { id: "b6", name: "开新会话", prompt: "新会话", newSession: true, beeTypeId: "bt-review", autoSend: true }, // 两键落库
+    { id: "b7", name: "未勾带蜂种", prompt: "p", newSession: false, beeTypeId: "bt-review" }, // 未勾 → newSession/beeTypeId 均不落
+    { id: "b8", name: "缺勾带蜂种", prompt: "p", beeTypeId: "bt-review" }, // 缺省 = 未勾 → 蜂种裁剪
+    { id: "b9", name: "坏 newSession", prompt: "p", newSession: "yes", beeTypeId: "bt-review" }, // 非 true → 不落字段
+    { id: "b10", name: "空蜂种", prompt: "p", newSession: true, beeTypeId: "" } // 空蜂种 → 仅落 newSession
   ],
   floor: [
     { id: "f1", name: "建巢建蜂", createBee: true, beeTypeId: "", model: { provider: "p", model: "m" }, prompt: "  ", autoSend: true }, // 空白 prompt/空蜂种 → 字段不落（模型保留）
     { id: "f2", name: "纯建巢", createBee: false, prompt: "应被联动裁剪", model: { provider: "p", model: "m" } }, // 建蜂关闭 → prompt 与模型同门控裁剪
     { id: "f3", name: "缺 createBee", prompt: "可选可留" } // createBee 缺省 false → prompt 联动裁剪
   ],
-  /* 提案栏（add-proposal-panel 3.1；proposal-panel-config 1.3/1.4）：提示词必填、
-     字段按 summon 门控、setStatus **形状校验**（非空字符串，枚举不封闭）、citeName 透传 */
+  /* 提案栏（add-proposal-panel 3.1；proposal-panel-config 1.3/1.4；new-session-hotbar
+     1.2/D6）：提示词必填、summon 恒剥离（存量键不物化）、蜂种/模型恒适用、
+     setStatus **形状校验**（非空字符串，枚举不封闭）、citeName 透传 */
   proposal: [
     { id: "p1", name: " 继续推进 ", summon: true, beeTypeId: "bt-review", model: { provider: " p ", model: " m " }, prompt: "推进 {change}", autoSend: true, setStatus: "reviewed" },
-    { id: "p2", name: "只直发", summon: false, beeTypeId: "bt-review", model: { provider: "p", model: "m" }, prompt: "看 {change}", autoSend: false, setStatus: "custom-x" }, // 召唤关闭 → 蜂种/模型裁剪；自定义 setStatus 原样保留
+    { id: "p2", name: "存量直发卡", summon: false, beeTypeId: "bt-review", model: { provider: "p", model: "m" }, prompt: "看 {change}", autoSend: false, setStatus: "custom-x" }, // summon 剥离；蜂种/模型恒适用（不再联动裁剪）
     { id: "p3", name: "缺提示词", summon: true }, // 提案栏提示词必填 → 滤
     { id: "p4", name: "空白提示词", summon: false, prompt: "   " }, // 空白 → 滤
-    { id: "p5", name: "无 setStatus", summon: false, prompt: "p" }, // setStatus 缺省 → 无该字段
-    { id: "p6", name: "setStatus 非字符串", summon: false, prompt: "p", setStatus: 7 }, // 形状非法 → 剥离
-    { id: "p7", name: "带建蜂字段", summon: false, prompt: "p", createBee: true }, // 提案栏无 createBee → 裁剪
-    { id: "p8", name: "不引用", summon: false, prompt: "p", citeName: false }, // citeName 显式关 → 透传落字段
-    { id: "p9", name: "引用缺省", summon: false, prompt: "p", citeName: true }, // citeName 显式开 → 透传落字段
-    { id: "p10", name: "坏 citeName", summon: false, prompt: "p", citeName: "yes" }, // 非 boolean → 剥离字段（缺省 = 勾选）
-    { id: "p11", name: "空白 setStatus", summon: false, prompt: "p", setStatus: "   " } // 全空白 → 形状非法，剥离
+    { id: "p5", name: "无 setStatus", prompt: "p" }, // setStatus 缺省 → 无该字段；summon 缺省亦不物化
+    { id: "p6", name: "setStatus 非字符串", prompt: "p", setStatus: 7 }, // 形状非法 → 剥离
+    { id: "p7", name: "带建蜂字段", prompt: "p", createBee: true }, // 提案栏无 createBee → 裁剪
+    { id: "p8", name: "不引用", prompt: "p", citeName: false }, // citeName 显式关 → 透传落字段
+    { id: "p9", name: "引用缺省", prompt: "p", citeName: true }, // citeName 显式开 → 透传落字段
+    { id: "p10", name: "坏 citeName", prompt: "p", citeName: "yes" }, // 非 boolean → 剥离字段（缺省 = 勾选）
+    { id: "p11", name: "空白 setStatus", prompt: "p", setStatus: "   " } // 全空白 → 形状非法，剥离
   ]
 });
 eq(norm.hive.length, 5, "巢栏：结构非法/重名条目全部滤除；模型形状非法仅剥离字段不丢槽位");
@@ -98,26 +107,40 @@ eq(norm.hive[1], { id: "h2", name: "巢禁用", autoSend: false, summon: false }
 eq(norm.hive[2], { id: "h6", name: "带建蜂字段", autoSend: false, summon: true }, "巢栏无 createBee → 按栏裁剪丢弃");
 eq(norm.hive[3], { id: "h7", name: "坏模型", autoSend: false, summon: true }, "provider 空 → 独立剥离 model 字段（槽位保留）");
 eq(norm.hive[4], { id: "h8", name: "非对象模型", autoSend: false, summon: true }, "model 非对象 → 独立剥离字段（槽位保留）");
-eq(norm.bee.length, 3, "蜂栏：提示词缺失/空白条目滤除（b3/b5 保留、字段矩阵裁剪）");
-eq(norm.bee[0], { id: "b1", name: "蜂指令", autoSend: false, model: { provider: "p", model: "m" }, prompt: "跑测试" }, "蜂栏条目归一化（召唤/建蜂字段不落；模型三栏全开）");
-eq(norm.bee[1], { id: "b3", name: "带召唤字段", autoSend: false, prompt: "x" }, "蜂栏 summon/createBee 字段不落");
+eq(norm.bee.length, 8, "蜂栏：提示词缺失/空白条目滤除；newSession 缺省不物化、beeTypeId 随 newSession 裁剪");
+eq(norm.bee[0], { id: "b1", name: "蜂指令", autoSend: false, model: { provider: "p", model: "m" }, prompt: "跑测试" }, "蜂栏条目归一化（召唤/建蜂字段不落；模型四栏全开）");
+eq(norm.bee[1], { id: "b3", name: "带召唤字段", autoSend: false, prompt: "x" }, "蜂栏 summon/createBee 字段不落（newSession 缺省亦不产键）");
 eq(norm.bee[2], { id: "b5", name: "档位坏", autoSend: false, prompt: "y" }, "reasoningEffort 非字符串 → 剥离 model 字段");
+eq(norm.bee[3], { id: "b6", name: "开新会话", autoSend: true, newSession: true, beeTypeId: "bt-review", prompt: "新会话" }, "newSession=true → 落标记 + 蜂种；模型未绑定不产键");
+eq(norm.bee[4], { id: "b7", name: "未勾带蜂种", autoSend: false, prompt: "p" }, "newSession=false → 标记与蜂种均不落（读取路径联动裁剪）");
+eq(norm.bee[5], { id: "b8", name: "缺勾带蜂种", autoSend: false, prompt: "p" }, "newSession 缺省 = 未勾 → 蜂种裁剪");
+eq(norm.bee[6], { id: "b9", name: "坏 newSession", autoSend: false, prompt: "p" }, "newSession 非 true → 不落字段（形状宽松读）");
+eq(norm.bee[7], { id: "b10", name: "空蜂种", autoSend: false, newSession: true, prompt: "p" }, "newSession=true + 空蜂种 → 仅落标记（缺省 = 默认蜂）");
 eq(norm.floor.length, 3, "地板栏：三条保留");
 eq(norm.floor[0], { id: "f1", name: "建巢建蜂", autoSend: true, createBee: true, model: { provider: "p", model: "m" } }, "地板栏建蜂开启（空 prompt/蜂种不落；模型保留）");
 eq(norm.floor[1], { id: "f2", name: "纯建巢", autoSend: false, createBee: false }, "地板栏建蜂关闭 → prompt/model 同门控裁剪");
 eq(norm.floor[2], { id: "f3", name: "缺 createBee", autoSend: false, createBee: false }, "createBee 缺省 false");
 
-/* 提案栏（3.1 + proposal-panel-config 1.3）：提示词必填 + 字段矩阵 + setStatus 形状校验 + citeName */
+/* 提案栏（3.1 + proposal-panel-config 1.3 + new-session-hotbar 1.2）：
+   提示词必填 + summon 剥离 + 蜂种/模型恒适用 + setStatus 形状校验 + citeName */
 eq(norm.proposal.length, 9, "提案栏：缺/空白提示词滤除，其余保留（坏 setStatus/citeName 仅剥离字段）");
-eq(norm.proposal[0], { id: "p1", name: "继续推进", autoSend: true, summon: true, prompt: "推进 {change}", beeTypeId: "bt-review", model: { provider: "p", model: "m" }, setStatus: "reviewed" }, "提案栏召唤条目归一化（name trim / 提示词原文保留 / 模型 trim）");
-eq(norm.proposal[1], { id: "p2", name: "只直发", autoSend: false, summon: false, prompt: "看 {change}", setStatus: "custom-x" }, "提案栏召唤关闭 → beeTypeId/model 读取路径裁剪；**列表外/自定义 setStatus 原样保留**（D4 形状校验，删状态不静默清空）");
-eq(norm.proposal[2], { id: "p5", name: "无 setStatus", autoSend: false, summon: false, prompt: "p" }, "setStatus 缺省 → 字段缺席（本卡不改状态）");
-eq(norm.proposal[3], { id: "p6", name: "setStatus 非字符串", autoSend: false, summon: false, prompt: "p" }, "setStatus 非字符串 → 独立剥离字段（槽位保留）");
-eq(norm.proposal[4], { id: "p7", name: "带建蜂字段", autoSend: false, summon: false, prompt: "p" }, "提案栏无 createBee → 按栏裁剪丢弃");
-eq(norm.proposal[5], { id: "p8", name: "不引用", autoSend: false, summon: false, prompt: "p", citeName: false }, "citeName 显式 false → 透传落字段（消费点据此不前置引用）");
-eq(norm.proposal[6], { id: "p9", name: "引用缺省", autoSend: false, summon: false, prompt: "p", citeName: true }, "citeName 显式 true → 透传落字段");
-eq(norm.proposal[7], { id: "p10", name: "坏 citeName", autoSend: false, summon: false, prompt: "p" }, "citeName 非 boolean → 剥离字段（缺字段 = 缺省勾选，消费点 `!== false` 判定）");
-eq(norm.proposal[8], { id: "p11", name: "空白 setStatus", autoSend: false, summon: false, prompt: "p" }, "setStatus 全空白 → 形状非法，剥离字段");
+eq(norm.proposal[0], { id: "p1", name: "继续推进", autoSend: true, prompt: "推进 {change}", beeTypeId: "bt-review", model: { provider: "p", model: "m" }, setStatus: "reviewed" }, "提案栏条目归一化（name trim / 提示词原文保留 / 模型 trim；summon 不物化）");
+eq(norm.proposal[1], { id: "p2", name: "存量直发卡", autoSend: false, prompt: "看 {change}", beeTypeId: "bt-review", model: { provider: "p", model: "m" }, setStatus: "custom-x" }, "存量 summon=false → 键剥离且**蜂种/模型恒适用**（不丢槽位、不联动裁剪）；列表外 setStatus 原样保留（D4）");
+eq(norm.proposal[2], { id: "p5", name: "无 setStatus", autoSend: false, prompt: "p" }, "setStatus 缺省 → 字段缺席（本卡不改状态）；summon 缺省不产键");
+eq(norm.proposal[3], { id: "p6", name: "setStatus 非字符串", autoSend: false, prompt: "p" }, "setStatus 非字符串 → 独立剥离字段（槽位保留）");
+eq(norm.proposal[4], { id: "p7", name: "带建蜂字段", autoSend: false, prompt: "p" }, "提案栏无 createBee → 按栏裁剪丢弃");
+eq(norm.proposal[5], { id: "p8", name: "不引用", autoSend: false, prompt: "p", citeName: false }, "citeName 显式 false → 透传落字段（消费点据此不前置引用）");
+eq(norm.proposal[6], { id: "p9", name: "引用缺省", autoSend: false, prompt: "p", citeName: true }, "citeName 显式 true → 透传落字段");
+eq(norm.proposal[7], { id: "p10", name: "坏 citeName", autoSend: false, prompt: "p" }, "citeName 非 boolean → 剥离字段（缺字段 = 缺省勾选，消费点 `!== false` 判定）");
+eq(norm.proposal[8], { id: "p11", name: "空白 setStatus", autoSend: false, prompt: "p" }, "setStatus 全空白 → 形状非法，剥离字段");
+/* summon 退役：存量键一律剥离（不物化），恒召唤语义由执行链路承担（1.2/D6） */
+ok(!("summon" in norm.proposal[0]) && !("summon" in norm.proposal[1]), "提案栏 summon 键剥离（存量 true/false 均不物化）");
+eq(normalizeSlot("proposal", { id: "x", name: "n", prompt: "p", summon: false }).summon, undefined, "normalizeSlot 直测：summon=false 剥离");
+ok(!("summon" in normalizeSlot("proposal", { id: "x", name: "n", prompt: "p", summon: true })), "normalizeSlot 直测：summon=true 亦剥离");
+/* newSession 缺省不物化 + 蜂种读取裁剪（1.1/D1/D3） */
+ok(!("newSession" in normalizeSlot("bee", { id: "x", name: "n", prompt: "p" })), "normalizeSlot 直测：newSession 缺省不产键");
+eq(normalizeSlot("bee", { id: "x", name: "n", prompt: "p", newSession: true, beeTypeId: "bt-1" }), { id: "x", name: "n", autoSend: false, newSession: true, beeTypeId: "bt-1", prompt: "p" }, "normalizeSlot 直测：newSession=true → 标记 + 蜂种");
+ok(!("beeTypeId" in normalizeSlot("bee", { id: "x", name: "n", prompt: "p", beeTypeId: "bt-1" })), "normalizeSlot 直测：未勾 newSession → beeTypeId 读取裁剪");
 /* citeName 缺省不物化：透传落盘的槽位**不含**该键（缺字段不写盘，归一化幂等） */
 ok(!("citeName" in norm.proposal[0]) && !("citeName" in norm.proposal[2]), "citeName 缺省不物化（透传不落盘，归一化幂等）");
 eq(normalizeSlot("proposal", { id: "x", name: "n", prompt: "p", citeName: false }).citeName, false, "normalizeSlot 直测：citeName=false 透传");
@@ -165,16 +188,18 @@ eq(validateSlotDraft([{ id: "a", name: "x", prompt: "p", model: { provider: "p",
 eq(validateSlotDraft([{ id: "a", name: "x", summon: true, prompt: "p", model: { provider: "p" } }], "hive").error?.code, "hive.hb.err.invalidModel", "巢栏同样适用（三栏全开同口径）");
 eq(validateSlotDraft([{ id: "a", name: "x", createBee: true, model: { provider: "p" } }], "floor").error?.code, "hive.hb.err.invalidModel", "地板栏同样适用（四栏全开同口径）");
 
-/* 提案栏校验口径（3.3/R15）：prompt 必填走 missingPrompt；beeTypeId 与 summon 的联动
-   **只走读取裁剪**，SHALL NOT 成为保存拒绝理由（与巢/地板栏同口径，两端都不新增 gate） */
-eq(validateSlotDraft([{ id: "a", name: "x", summon: true, prompt: "推进 {change}" }], "proposal").error, null, "提案栏合法草稿 → null");
-eq(validateSlotDraft([{ id: "a", name: "x", summon: true, prompt: "  " }], "proposal").error, { index: 0, field: "prompt", code: "hive.hb.err.missingPrompt" }, "提案栏空白提示词 → missingPrompt（必填）");
-eq(validateSlotDraft([{ id: "a", name: "x", summon: false }], "proposal").error?.code, "hive.hb.err.missingPrompt", "提案栏提示词缺失 → missingPrompt");
-eq(validateSlotDraft([{ id: "a", name: "x", summon: false, beeTypeId: "bt-1", prompt: "p" }], "proposal").error, null, "提案栏召唤关闭而 beeTypeId 非空 → 保存 SHALL NOT 被拒绝（读取路径裁剪）");
-eq(validateSlotDraft([{ id: "a", name: "x", summon: true, beeTypeId: "bt-1", prompt: "p" }], "proposal").error, null, "提案栏召唤开启 + 蜂种 → 通过");
-eq(validateSlotDraft([{ id: "a", name: "x", summon: true, prompt: "p", setStatus: "reviewed" }], "proposal").error, null, "提案栏 setStatus 枚举值 → 通过（编辑器为受限下拉，校验面不新增拒绝）");
+/* 提案栏校验口径（3.3/R15；new-session-hotbar 1.4）：prompt 必填走 missingPrompt；
+   summon 已退役（不再参与任何校验）；蜂种/模型**恒适用**，SHALL NOT 成为保存拒绝理由 */
+eq(validateSlotDraft([{ id: "a", name: "x", prompt: "推进 {change}" }], "proposal").error, null, "提案栏合法草稿 → null（恒召唤，无开关）");
+eq(validateSlotDraft([{ id: "a", name: "x", prompt: "  " }], "proposal").error, { index: 0, field: "prompt", code: "hive.hb.err.missingPrompt" }, "提案栏空白提示词 → missingPrompt（必填）");
+eq(validateSlotDraft([{ id: "a", name: "x" }], "proposal").error?.code, "hive.hb.err.missingPrompt", "提案栏提示词缺失 → missingPrompt");
+eq(validateSlotDraft([{ id: "a", name: "x", beeTypeId: "bt-1", prompt: "p" }], "proposal").error, null, "提案栏蜂种恒适用 → 保存 SHALL NOT 被拒绝");
+eq(validateSlotDraft([{ id: "a", name: "x", prompt: "p", setStatus: "reviewed" }], "proposal").error, null, "提案栏 setStatus 枚举值 → 通过（编辑器为受限下拉，校验面不新增拒绝）");
 eq(validateSlotDraft([{ id: "a", name: "x", prompt: "p", model: { provider: "p" } }], "proposal").error?.code, "hive.hb.err.invalidModel", "提案栏 model 形状同口径字段级拒绝");
 eq(validateSlotDraft(Array.from({ length: 33 }, (_, i) => ({ id: "i" + i, name: "n" + i, prompt: "p" })), "proposal").error?.code, "hive.hb.err.tooManySlots", "提案栏超 32 → tooManySlots（宿主 zod 同界）");
+/* 蜂栏 newSession/beeTypeId 无新增拒绝规则（联动只走读取路径裁剪，1.4） */
+eq(validateSlotDraft([{ id: "a", name: "x", prompt: "p", newSession: true, beeTypeId: "bt-1" }], "bee").error, null, "蜂栏 newSession + 蜂种 → 保存不被拒绝（联动只走读取裁剪）");
+eq(validateSlotDraft([{ id: "a", name: "x", prompt: "p", beeTypeId: "bt-1" }], "bee").error, null, "蜂栏未勾 newSession 而带蜂种 → 保存不被拒绝（读取时裁剪）");
 
 /* 容量超出 → 保存允许（error null）但提示键返回 overflow 数 */
 const over = validateSlotDraft(
@@ -312,7 +337,7 @@ const userFloor = [{ id: "f9", name: "地板卡", createBee: false, autoSend: fa
 eq(effectiveHotbarSlots("floor", userFloor, identityT), userFloor, "地板栏非空用户槽位 → 原样返回（同引用，默认卡收回）");
 /* 提案栏：无默认卡——空栏派生空数组（组件整栏不渲染），非空原样返回 */
 eq(effectiveHotbarSlots("proposal", [], identityT), [], "空提案栏 → 空数组（无默认卡，整栏不渲染）");
-const userProposal = [{ id: "p9", name: "提案卡", summon: false, prompt: "p", autoSend: false }];
+const userProposal = [{ id: "p9", name: "提案卡", prompt: "p", autoSend: false }];
 eq(effectiveHotbarSlots("proposal", userProposal, identityT), userProposal, "提案栏非空用户槽位 → 原样返回（同引用）");
 /* 四栏互不影响：仅蜂栏有用户槽位 → 巢/地板/提案照常按各自骨架派生 */
 eq(effectiveHotbarSlots("hive", [], identityT), [], "蜂栏有用户槽位，巢栏照常派生空（四栏互不影响）");
@@ -355,7 +380,7 @@ eq(appendPrompt("d", 42), "d\n42", "非字符串 prompt → 字符串化");
 const once = appendPrompt("", "a");
 eq(appendPrompt(once, "b"), "a\nb", "两次追加 → 换行分隔");
 
-/* ── workerBeeIdOf 门控矩阵（蜂栏/覆盖面板门控复用） ── */
+/* ── workerBeeIdOf 门控矩阵（蜂栏/覆盖面板门控复用；工蜂 = 巢内蜂，1.3） ── */
 const world = {
   studios: [
     {
@@ -371,7 +396,7 @@ const world = {
 const sessionsOf = (over = {}) => ({ byId: { "bee-1": { origin: "user" }, "orphan-drone": { origin: "subagent" }, "wild-1": { origin: "user" }, "drone-1": { origin: "subagent" } }, ...over });
 
 eq(workerBeeIdOf(world, "bee-1", null, sessionsOf()), "bee-1", "工蜂选中 → 卡片区显示");
-eq(workerBeeIdOf(world, "wild-1", null, sessionsOf()), "wild-1", "野蜂（未分组主会话）→ 显示");
+eq(workerBeeIdOf(world, "wild-1", null, sessionsOf()), null, "野蜂（未分组主会话）→ null（工蜂仅认巢内蜂，蜂栏 SHALL NOT 渲染：D2）");
 eq(workerBeeIdOf(world, "drone-1", null, sessionsOf()), null, "无人机（巢蜂 drones 挂载）→ 不显示");
 eq(workerBeeIdOf(world, "orphan-drone", null, sessionsOf()), null, "orphan 无人机（降级混入巢内）→ 不显示");
 eq(workerBeeIdOf(world, "bee-1", { kind: "tile", id: "4,-2" }, sessionsOf()), null, "非蜂显式选中 → 收起");

@@ -4,7 +4,8 @@
  *    标题回退 sessionId）；
  *  - sessionsBriefStore：内容不变不 bump（镜像 tick 高频下概要条 SHALL NOT 入 React
  *    重渲染热路径）、变化即发布、订阅清理；
- *  - 非工蜂隐藏判定：workerBeeIdOf（无人机 / 空白 / 归档蜜杯 / 无蜂会话 → null）。
+ *  - 非工蜂隐藏判定：workerBeeIdOf（无人机 / 空白 / 归档蜜杯 / **野蜂（工蜂仅认
+ *    巢内蜂，new-session-hotbar 1.3/D2）** / 无蜂会话 → null）。
  * 运行：node test/brief-bar-smoke.mjs
  */
 import { deriveWorld, sessionsBriefOf } from "../src/bee-model.mjs";
@@ -71,7 +72,10 @@ eq(
   sessionsBriefStore.set(null); // 复位
 }
 
-/* ════ 3. 非工蜂隐藏判定（workerBeeIdOf 门控 = BriefBar 显示条件） ════ */
+/* ════ 3. 非工蜂隐藏判定（workerBeeIdOf 门控 = BriefBar 显示条件） ════
+   new-session-hotbar 1.3/D2：工蜂口径收紧为「仅巢内蜂」——野蜂（未分组主会话）
+   同样 → null（顶部会话概要条随口径隐藏，与 session-brief-bar 既有措辞
+   「仅当当前会话对应一只已渲染工蜂时显示」逐字对齐）。 */
 {
   const byId = {};
   const ids = [];
@@ -83,13 +87,16 @@ eq(
   add({ id: "s-drone", displayTitle: "无人机", blank: false, origin: "subagent", parentId: "s-worker", cwd: "F:/a", updatedAt: 2 });
   add({ id: "s-blank", displayTitle: "空白", blank: true, cwd: "F:/a", updatedAt: 3 });
   add({ id: "s-arch", displayTitle: "归档", blank: false, cwd: "F:/a", updatedAt: 4 });
+  add({ id: "s-wild", displayTitle: "野蜂", blank: false, cwd: "F:/b", updatedAt: 5 }); // 未分组主会话 → 野蜂
   const sessions = { ids, byId, current: "s-worker" };
   const workspaces = { items: [{ workspaceId: "ws-a", path: "F:/a", title: "a", sessionIds: ["s-worker", "s-drone", "s-blank", "s-arch"] }], archivedSessionIds: ["s-arch"] };
   const world = deriveWorld({ sessions, workspaces, positions: {} }).world;
+  eq(world.wildBees.map((w) => w.sessionId), ["s-wild"], "前置：s-wild 派生为野蜂（不在任何巢账号内）");
   eq(workerBeeIdOf(world, "s-worker", null, sessions), "s-worker", "当前会话为已渲染工蜂 → 显示（门控通过）");
   eq(workerBeeIdOf(world, "s-drone", null, sessions), null, "当前会话为无人机 → null（隐藏，SHALL NOT 空壳）");
   eq(workerBeeIdOf(world, "s-blank", null, sessions), null, "空白会话（无蜂）→ null（隐藏）");
   eq(workerBeeIdOf(world, "s-arch", null, sessions), null, "归档蜜杯 → null（隐藏）");
+  eq(workerBeeIdOf(world, "s-wild", null, sessions), null, "野蜂（未分组主会话）→ null（隐藏；工蜂仅认巢内蜂）");
   eq(workerBeeIdOf(world, "s-missing", null, sessions), null, "无蜂会话（未知 id）→ null（隐藏）");
   eq(workerBeeIdOf(world, "s-worker", { kind: "studio", id: "ws-a" }, sessions), null, "非蜂显式选中 → null（隐藏）");
 }

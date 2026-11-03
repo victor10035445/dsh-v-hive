@@ -335,6 +335,20 @@ const beeBar = render(HotbarBar({ t, kind: "bee", slots: [{ id: "b1", name: "追
 eq(collect(beeBar, (n) => n.tag === "button")[0].props.disabled, true, "蜂栏未勾 + 桥未就绪 → 禁用");
 const beeBar2 = render(HotbarBar({ t, kind: "bee", slots: [{ id: "b2", name: "直发", prompt: "x", autoSend: true }], layout: { barM: 4, barN: 1 }, disabled: false, summonBusy: false, floorBusy: false, bridgeReady: false, onSlot: () => {} }));
 eq(collect(beeBar2, (n) => n.tag === "button")[0].props.disabled, false, "蜂栏勾选直发 → 恒可用");
+/* 蜂栏「新开会话」卡门控（new-session-hotbar 2.4/D1/D5）：召唤通道不受输入桥就绪门控，
+   纳入召唤类共享在途锁（data-busy 视觉在途态），title 区分落点语义 */
+const beeNewSessionSlot = { id: "b3", name: "开新会话", prompt: "新任务", autoSend: false, newSession: true };
+const beeNewSession = render(HotbarBar({ t, kind: "bee", slots: [beeNewSessionSlot], layout: { barM: 4, barN: 1 }, disabled: false, summonBusy: false, floorBusy: false, bridgeReady: false, onSlot: () => {} }));
+const beeNewSessionBtn = collect(beeNewSession, (n) => n.tag === "button")[0];
+eq(beeNewSessionBtn.props.disabled, false, "newSession=是 卡不受桥未就绪门控（桥未就绪仍可用）");
+eq(beeNewSessionBtn.props.title, "新任务 · hive.bar.beeNewSessionTitle", "title = 提示词 + 落点语义说明（区分「新开会话」通道）");
+eq(beeNewSessionBtn.props["data-busy"], undefined, "未在途 → 无 data-busy");
+const beeNewSessionBusy = render(HotbarBar({ t, kind: "bee", slots: [beeNewSessionSlot], layout: { barM: 4, barN: 1 }, disabled: false, summonBusy: true, floorBusy: false, bridgeReady: true, onSlot: () => {} }));
+const beeNewSessionBusyBtn = collect(beeNewSessionBusy, (n) => n.tag === "button")[0];
+eq(beeNewSessionBusyBtn.props.disabled, true, "召唤在途 → newSession=是 卡禁用（召唤类共享单飞锁）");
+eq(beeNewSessionBusyBtn.props["data-busy"], true, "在途 → data-busy 视觉在途态");
+const beeLegacyBusy = render(HotbarBar({ t, kind: "bee", slots: [{ id: "b4", name: "追加", prompt: "x", autoSend: false }], layout: { barM: 4, barN: 1 }, disabled: false, summonBusy: true, floorBusy: false, bridgeReady: true, onSlot: () => {} }));
+eq(collect(beeLegacyBusy, (n) => n.tag === "button")[0].props.disabled, false, "newSession=否 卡不受召唤在途锁（不建蜂）");
 const hiveBar = render(HotbarBar({ t, kind: "hive", slots: [{ id: "h1", name: "禁用卡", summon: false, autoSend: false }], layout: { barM: 4, barN: 1 }, disabled: false, summonBusy: false, floorBusy: false, bridgeReady: true, onSlot: () => {} }));
 eq(collect(hiveBar, (n) => n.tag === "button")[0].props.disabled, true, "巢栏召唤关闭 → 卡禁用态");
 const floorBar = render(HotbarBar({ t, kind: "floor", slots: [{ id: "f1", name: "建巢", createBee: true, autoSend: false }], layout: { barM: 4, barN: 1 }, disabled: false, summonBusy: false, floorBusy: true, bridgeReady: true, onSlot: () => {} }));
@@ -746,6 +760,65 @@ ok(!selectOf(unavailTree, L("hive.hb.model")), "目录不可用 → 无模型下
 ok(textOf(unavailTree).includes(L("hive.swarm.modelUnavailable")), "目录不可用提示呈现");
 await collect(unavailTree, (n) => String(n.props.className ?? "").includes("jyv-qcSave"))[0].props.onClick();
 eq(savedUnavailable?.bee?.[0]?.model, { provider: "p-a", model: "glm-5.3-flash" }, "不可用态只挡新选择：草稿已存模型值保留（SHALL NOT 清空或改写）");
+
+/* ══ 5b2. 蜂栏「新开会话」表单（new-session-hotbar 4.1/4.2/D3） ══
+   勾选框默认不勾；蜂种下拉随 newSession 联动禁用（缺省「默认蜂」）；
+   模型/档位控件恒启用（直发 = 切当前蜂模型 / 召唤 = 新蜂选型），hint 双语义。 */
+const beeNewSessionBoxOf = (tree) =>
+  collect(tree, (n) => n.props?.["data-testid"] === "hb-bee-newSession")[0];
+const beeTypeSelectOf = (tree) => collect(tree, (n) => n.props?.["data-testid"] === "hb-beeType")[0];
+let nsForm = openBeeForm(beeSlotProps());
+const nsBox = beeNewSessionBoxOf(nsForm);
+ok(nsBox, "蜂栏节槽位表单含「新开会话」勾选框（data-testid）");
+eq(nsBox.props.checked, false, "新开会话默认不勾（缺省 = 既有双通道）");
+eq(textOf(nsForm).includes(L("hive.hb.newSession")), true, "勾选框文案 = 本地化「新开会话」");
+eq(beeTypeSelectOf(nsForm).props.disabled, true, "未勾 newSession → 蜂种下拉联动禁用");
+eq(beeTypeSelectOf(nsForm).props.value, "", "蜂种缺省 = 默认蜂（空键）");
+eq(selectOf(nsForm, L("hive.hb.model")).props.disabled, false, "模型下拉恒启用（直发语义仍可用）");
+ok(textOf(nsForm).includes(L("hive.hb.beeModelHint")), "模型 hint 呈现双语义说明");
+nsBox.props.onChange({ target: { checked: true } });
+hookIndex = 0;
+nsForm = render(HotbarsModal(beeSlotProps()));
+eq(beeNewSessionBoxOf(nsForm).props.checked, true, "勾选后受控回显");
+eq(beeTypeSelectOf(nsForm).props.disabled, false, "勾选 newSession → 蜂种下拉可用");
+/* 保存链路：newSession + 蜂种随载荷落盘（未勾时读取裁剪由 normalize 侧保证） */
+let nsPayload = null;
+const nsSaveProps = beeSlotProps({ onSave: async (next) => { nsPayload = next; return { ok: true }; } });
+let nsSaveTree = openBeeForm(nsSaveProps);
+beeNewSessionBoxOf(nsSaveTree).props.onChange({ target: { checked: true } });
+hookIndex = 0;
+nsSaveTree = render(HotbarsModal(nsSaveProps));
+beeTypeSelectOf(nsSaveTree).props.onChange({ target: { value: "bt-design" } });
+hookIndex = 0;
+nsSaveTree = render(HotbarsModal(nsSaveProps));
+await collect(nsSaveTree, (n) => String(n.props.className ?? "").includes("jyv-qcSave"))[0].props.onClick();
+eq(nsPayload?.bee?.[0]?.newSession, true, "保存载荷携带 newSession=true（勾选后）");
+eq(nsPayload?.bee?.[0]?.beeTypeId, "bt-design", "保存载荷携带蜂种（联动可用后）");
+/* 直接保存一个未勾槽位 → 载荷不含 newSession/beeTypeId（缺省不物化） */
+let nsDefaultPayload = null;
+const nsDefaultProps = beeSlotProps({ onSave: async (next) => { nsDefaultPayload = next; return { ok: true }; } });
+const nsDefaultTree = openBeeForm(nsDefaultProps);
+await collect(nsDefaultTree, (n) => String(n.props.className ?? "").includes("jyv-qcSave"))[0].props.onClick();
+ok(nsDefaultPayload !== null && !("newSession" in nsDefaultPayload.bee[0]) && !("beeTypeId" in nsDefaultPayload.bee[0]), "未勾 newSession → 载荷无 newSession/beeTypeId 键（缺省不物化）");
+
+/* ══ 5b3. 提案栏节表单（new-session-hotbar 4.3/6.2/D6） ══
+   「新召唤」开关退役（恒召唤）；蜂种/模型恒可用；恒召唤说明呈现。 */
+const openSectionForm = (props, tabId) => {
+  hookCells = []; hookIndex = 0;
+  pass(props);
+  collect(pass(props), (n) => n.props?.id === tabId)[0].props.onClick();
+  collect(pass(props), (n) => String(n.props.className ?? "").includes("jyv-qcRow") && typeof n.props.onClick === "function")[0].props.onClick();
+  return pass(props);
+};
+const proposalFormProps = beeSlotProps({
+  hotbars: { hive: [], bee: [], floor: [], proposal: [{ id: "p1", name: "推进", prompt: "推进 {change}", autoSend: false }] }
+});
+const proposalForm = openSectionForm(proposalFormProps, "jyv-railTab-proposal");
+eq(collect(proposalForm, (n) => n.tag === "label" && textOf(n) === L("hive.hb.summon")).length, 0, "提案栏节 SHALL NOT 呈现「召唤新蜂」开关（恒召唤）");
+eq(selectOf(proposalForm, L("hive.hb.beeType")).props.disabled, false, "提案栏蜂种恒可用（不随任何开关联动）");
+eq(selectOf(proposalForm, L("hive.hb.model")).props.disabled, false, "提案栏模型恒可用（恒召唤 = 新蜂选型）");
+ok(textOf(proposalForm).includes(L("hive.hb.proposalAlwaysSummonHint")), "提案栏恒召唤说明呈现");
+ok(textOf(proposalForm).includes(L("hive.hb.proposalCiteName")), "引用提案目录勾选框仍在（提案栏专属控件保留）");
 
 /* ══ 5c. 蜂栏「导入快捷功能」（plugin-config-import；5.2/5.3/5.5） ══ */
 
