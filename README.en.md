@@ -2,6 +2,8 @@
 
 [简体中文](README.md) | **English**
 
+> ⚠️ **This repository is no longer maintained**: the project has been upgraded to [dsh-v-cosmos](https://github.com/victor10035445/dsh-v-cosmos). Please visit the new repository for updates. The content below is kept as a historical archive.
+
 A DeepSeek Harness Web plugin: builds a 3D "infinite hive" with three.js — workspaces are hexagonal studios, sessions are worker bees, archives are stored honey, making session management spatial.
 
 Purely additive plugin: replaces or disables nothing from the official set.

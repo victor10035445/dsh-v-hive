@@ -2,6 +2,8 @@
 
 **简体中文** | [English](README.en.md)
 
+> ⚠️ **本仓库已停止更新维护**：该项目已升级为 [dsh-v-cosmos](https://github.com/victor10035445/dsh-v-cosmos)，请前往新仓库获取后续更新。以下内容仅作历史存档。
+
 DeepSeek Harness Web 插件：用 three.js 构建 3D「无限蜂巢」——工作区是六边形工作室，会话是工蜂，归档是储蜜，让会话管理空间化。
 
 纯增量插件：不替换、不禁用任何官方插件。
